@@ -1,0 +1,14 @@
+{
+  "markets": [
+    {
+      "exchange": "Hibachi",
+      "enabled": true,
+      "symbols": ["BTC-PERP", "ETH-PERP", "EUR-PERP"]
+    },
+    {
+      "exchange": "Rise",
+      "enabled": true,
+      "symbols": ["BTC-PERP"]
+    }
+  ]
+}

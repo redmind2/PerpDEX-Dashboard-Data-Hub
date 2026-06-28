@@ -1,0 +1,13 @@
+[project]
+name = "perpdex-dashboard-data-hub"
+version = "0.1.0"
+description = "Public PerpDEX market data collector, SQLite storage, CLI dashboard, and future shared data API."
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+perpdex = "perpdex_bot.cli:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
