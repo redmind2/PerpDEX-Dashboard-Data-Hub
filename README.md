@@ -147,6 +147,14 @@ powershell -ExecutionPolicy Bypass -File .\scripts\live-test-loop.ps1
 .\perpdex.cmd slippage --exchange Hibachi --symbol BTC-PERP
 .\perpdex.cmd storage
 .\perpdex.cmd prune --days 90
+
+# Short-symbol cross-exchange views:
+.\perpdex.cmd spreads --symbol BTC
+.\perpdex.cmd slippage --symbol BTC
+.\perpdex.cmd orderspread --symbol BTC
+.\perpdex.cmd funding --symbol BTC
+.\perpdex.cmd funding-history --symbol BTC
+.\perpdex.cmd dashboard --symbol BTC
 ```
 
 ## Telegram Health Monitor
@@ -173,11 +181,16 @@ Telegram commands:
 /storage - show DB size and row counts
 /markets - show monitored exchanges and markets
 /failures - show active collector failures
-/slippage Hibachi BTC-PERP - show simple slippage for one market
+/slippage BTC - show simple slippage rows across exchanges
+/slippage Hibachi BTC - show simple slippage for one market
+/orderspread - show $100k order-size spread rows for every market
+/orderspread BTC - show $100k order-size spread rows across exchanges
+/orderspread Hibachi - show $100k order-size spread rows for one exchange
+/orderspread Hibachi BTC - show order-size spread details
 /spreads - show spread rows for every monitored market
 /spreads Hibachi - show spread rows for one exchange
-/spreads BTC-PERP - show spread rows for one market across exchanges
-/spreads Hibachi BTC-PERP - show one market's current and average spreads
+/spreads BTC - show spread rows for one market across exchanges
+/spreads Hibachi BTC - show one market's current and average spreads
 ```
 
 Preview one monitor message without sending Telegram:

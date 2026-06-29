@@ -54,7 +54,9 @@ from .telegram_monitor import (
     TELEGRAM_PID_PATH_ENV_VAR,
     TELEGRAM_STATUS_INTERVAL_ENV_VAR,
     TELEGRAM_STALE_AFTER_ENV_VAR,
+    format_order_spread_command,
     config_from_args,
+    normalize_market_symbol,
     run_telegram_monitor,
 )
 
@@ -115,6 +117,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     slippage = sub.add_parser("slippage", help="Show $10k to $1M estimated slippage")
     _add_market_filters(slippage)
+
+    order_spread = sub.add_parser("orderspread", help="Show order-size adjusted spread")
+    _add_optional_market_filters(order_spread)
+    order_spread.add_argument(
+        "--notional",
+        type=_positive_int,
+        default=100_000,
+        help="USD notional for list views. Defaults to 100000.",
+    )
 
     prune = sub.add_parser("prune", help="Delete market/orderbook data older than retention")
     prune.add_argument("--days", type=int, default=MARKET_RETENTION_DAYS)
@@ -187,7 +198,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _add_market_filters(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--exchange", default=None, help="Exchange id filter, for example GRVT")
-    parser.add_argument("--symbol", default="BTC-PERP", help="Internal symbol, for example BTC-PERP")
+    parser.add_argument("--symbol", default=None, help="Internal symbol, for example BTC-PERP or BTC")
 
 
 def _add_optional_market_filters(parser: argparse.ArgumentParser) -> None:
@@ -260,7 +271,13 @@ async def run(args: argparse.Namespace) -> None:
             print(f"- intended market collection cadence: {collection_interval_seconds()} seconds")
             return
 
+        if args.command == "orderspread":
+            print(format_order_spread_command(args.db, _command_market_args(args), list_notional=args.notional))
+            return
+
         if args.command in {"collector-status", "status"}:
+            if args.symbol:
+                args.symbol = normalize_market_symbol(args.symbol)
             statuses = await repo.collector_statuses(args.exchange, args.symbol)
             if args.failed_only:
                 statuses = [item for item in statuses if item.consecutive_failures > 0]
@@ -283,6 +300,12 @@ async def run(args: argparse.Namespace) -> None:
                     print("No markets with active collector failures.")
                     return
             print(render_market_overview(rows, str(args.log_file)))
+            return
+
+        args.symbol = None if args.symbol is None else normalize_market_symbol(args.symbol)
+        multi_targets = _display_targets(args)
+        if multi_targets:
+            await _run_multi_market_view(args, repo, multi_targets)
             return
 
         snapshot = await repo.latest_snapshot(args.exchange, args.symbol)
@@ -417,6 +440,70 @@ def _market_targets(args: argparse.Namespace) -> list[MarketConfig]:
     return markets
 
 
+async def _run_multi_market_view(
+    args: argparse.Namespace,
+    repo: MarketDataRepository,
+    targets: list[MarketConfig],
+) -> None:
+    sections: list[str] = []
+    for market in targets:
+        for symbol in market.symbols:
+            snapshot = await repo.latest_snapshot(market.exchange_id, symbol)
+            if snapshot is None:
+                sections.extend((f"[{market.exchange_id} {symbol}]", "No market data found."))
+                continue
+            sections.append(f"[{market.exchange_id} {symbol}]")
+            if args.command == "dashboard":
+                average_spreads = await repo.average_spreads(market.exchange_id, symbol)
+                funding = await repo.average_funding_rates(market.exchange_id, symbol)
+                sections.append(render_dashboard(snapshot, average_spreads, funding))
+            elif args.command == "spreads":
+                average_spreads = await repo.average_spreads(market.exchange_id, symbol)
+                sections.append("[Current Spread]")
+                sections.append(render_snapshot(snapshot))
+                sections.append("")
+                sections.append("[Average Spread]")
+                sections.append(render_average_spreads(average_spreads))
+            elif args.command == "funding":
+                history = await repo.average_funding_rates(market.exchange_id, symbol)
+                sections.append("[Historical Average Funding Rate]")
+                sections.append(render_average_funding_rates(history))
+            elif args.command == "funding-history":
+                history = await repo.funding_history(market.exchange_id, symbol, args.limit)
+                sections.append(render_funding_history(history))
+            elif args.command == "slippage":
+                estimates = estimate_slippage_grid(
+                    DEFAULT_SLIPPAGE_NOTIONALS,
+                    reference_price=snapshot.mid_price,
+                    bids=snapshot.bids,
+                    asks=snapshot.asks,
+                )
+                sections.append(render_slippage(estimates))
+            else:
+                raise SystemExit(f"Unknown command: {args.command}")
+            sections.append("")
+    print("\n".join(sections).rstrip())
+
+
+def _display_targets(args: argparse.Namespace) -> list[MarketConfig]:
+    if args.command not in {"dashboard", "spreads", "funding", "funding-history", "slippage"}:
+        return []
+    if args.exchange is None and args.symbol is None:
+        return []
+    if args.exchange and args.symbol:
+        return []
+    markets = load_market_config(DEFAULT_MARKET_CONFIG_PATH)
+    if args.exchange:
+        return [market for market in markets if market.exchange_id.lower() == args.exchange.lower()]
+    if args.symbol:
+        return [
+            MarketConfig(market.exchange_id, (args.symbol,))
+            for market in markets
+            if args.symbol in market.symbols
+        ]
+    return []
+
+
 async def _market_overview_rows(
     args: argparse.Namespace,
     repo: MarketDataRepository,
@@ -457,6 +544,23 @@ def _positive_float(value: str) -> float:
     if parsed <= 0:
         raise argparse.ArgumentTypeError("must be greater than 0")
     return parsed
+
+
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be greater than 0")
+    return parsed
+
+
+def _command_market_args(args: argparse.Namespace) -> list[str]:
+    if args.exchange and args.symbol:
+        return [args.exchange, args.symbol]
+    if args.exchange:
+        return [args.exchange]
+    if args.symbol:
+        return [args.symbol]
+    return []
 
 
 def _parse_archive_now(value: str | None) -> date | None:

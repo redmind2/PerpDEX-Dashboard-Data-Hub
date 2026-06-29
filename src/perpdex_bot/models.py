@@ -123,3 +123,15 @@ class SlippageEstimate:
     slippage_bps: float | None
     filled_notional: float
     complete: bool
+
+
+@dataclass(frozen=True)
+class OrderSpreadEstimate:
+    notional_usd: float
+    average_buy_price: float | None
+    average_sell_price: float | None
+    spread: float | None
+    spread_bps: float | None
+    buy_filled_notional: float
+    sell_filled_notional: float
+    complete: bool

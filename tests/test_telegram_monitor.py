@@ -9,6 +9,7 @@ from perpdex_bot.telegram_monitor import (
     command_response,
     db_issues,
     format_bytes,
+    format_order_spread_command,
     format_spreads_command,
     format_slippage_command,
     log_issues,
@@ -45,7 +46,8 @@ def test_command_response_help_lists_interactive_commands(tmp_path) -> None:
     output = command_response("/help", [], config, status, "running")
 
     assert "/markets" in output
-    assert "/slippage EXCHANGE SYMBOL" in output
+    assert "/slippage SYMBOL" in output
+    assert "/orderspread SYMBOL" in output
     assert "/spreads EXCHANGE SYMBOL" in output
     assert normalize_command("/status@PerpDEXDashboardbot") == "/status"
 
@@ -125,10 +127,62 @@ def test_format_slippage_command_reads_latest_orderbook(tmp_path) -> None:
         conn.commit()
 
     output = format_slippage_command(db_path, ["Hibachi", "BTC-PERP"])
+    market_output = format_slippage_command(db_path, ["BTC"])
 
     assert "Slippage Hibachi BTC-PERP" in output
     assert "buy $10k" in output
     assert "sell $1M" in output
+    assert "Slippage all exchanges BTC-PERP" in market_output
+    assert "Hibachi BTC-PERP" in market_output
+
+
+def test_format_order_spread_command_uses_saved_orderbooks(tmp_path) -> None:
+    db_path = tmp_path / "monitor.sqlite"
+    timestamp = datetime.now(timezone.utc)
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(SCHEMA)
+        cursor = conn.execute(
+            """
+            INSERT INTO market_snapshots (
+                exchange_id, symbol, timestamp, mark_price, index_price,
+                best_bid, best_ask, spread, spread_bps
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "Hibachi",
+                "BTC-PERP",
+                timestamp.isoformat(),
+                100.0,
+                100.0,
+                99.0,
+                101.0,
+                2.0,
+                200.0,
+            ),
+        )
+        snapshot_id = cursor.lastrowid
+        conn.executemany(
+            """
+            INSERT INTO orderbook_levels (
+                snapshot_id, side, price, size, notional, level_index
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (snapshot_id, "bid", 99.0, 20000.0, 1_980_000.0, 0),
+                (snapshot_id, "ask", 101.0, 20000.0, 2_020_000.0, 0),
+            ],
+        )
+        conn.commit()
+
+    market_output = format_order_spread_command(db_path, ["BTC"])
+    detail_output = format_order_spread_command(db_path, ["Hibachi", "BTC"])
+
+    assert "OrderSpread all exchanges BTC-PERP" in market_output
+    assert "Hibachi BTC-PERP" in market_output
+    assert "OrderSpread Hibachi BTC-PERP" in detail_output
+    assert "$100k" in detail_output
 
 
 def test_format_spreads_command_supports_overall_exchange_and_market(tmp_path) -> None:
@@ -167,8 +221,8 @@ def test_format_spreads_command_supports_overall_exchange_and_market(tmp_path) -
 
     overall = format_spreads_command(db_path, [])
     exchange = format_spreads_command(db_path, ["Hibachi"])
-    market = format_spreads_command(db_path, ["BTC-PERP"])
-    specific = format_spreads_command(db_path, ["Hibachi", "BTC-PERP"])
+    market = format_spreads_command(db_path, ["BTC"])
+    specific = format_spreads_command(db_path, ["Hibachi", "BTC"])
 
     assert "Spreads all exchanges all markets" in overall
     assert "Hibachi BTC-PERP" in overall

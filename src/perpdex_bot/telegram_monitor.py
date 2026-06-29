@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .calculations import estimate_slippage_grid
+from .calculations import estimate_order_spread, estimate_slippage_grid
 from .config import (
     DEFAULT_COLLECTOR_LOG_PATH,
     DEFAULT_AVERAGE_WINDOWS,
@@ -21,7 +21,7 @@ from .config import (
     collector_log_path,
     load_market_config,
 )
-from .models import BookSide, OrderBookLevel, SlippageEstimate, from_iso
+from .models import BookSide, OrderBookLevel, OrderSpreadEstimate, SlippageEstimate, from_iso
 
 
 TELEGRAM_TOKEN_ENV_VAR = "PERPDEX_TELEGRAM_BOT_TOKEN"
@@ -45,6 +45,8 @@ LOG_ALERT_PATTERNS = (
     "collection failed",
     "failed to collect",
 )
+ORDER_SPREAD_WINDOWS = ("5m", "1h", "24h", "7d", "30d")
+DEFAULT_ORDER_SPREAD_LIST_NOTIONAL = 100_000
 
 
 @dataclass(frozen=True)
@@ -376,6 +378,8 @@ def command_response(
         return format_slippage_command(config.db_path, args)
     if command == "/spreads":
         return format_spreads_command(config.db_path, args)
+    if command == "/orderspread":
+        return format_order_spread_command(config.db_path, args)
     return "Unknown command. Send /help to see available commands."
 
 
@@ -388,10 +392,15 @@ def format_help_message() -> str:
             "/storage - show DB size and row counts",
             "/markets - show monitored exchanges and markets",
             "/failures - show active collector failures",
-            "/slippage EXCHANGE SYMBOL - show simple slippage, for example /slippage Hibachi BTC-PERP",
+            "/slippage SYMBOL - show slippage rows across exchanges, for example /slippage BTC",
+            "/slippage EXCHANGE SYMBOL - show one market slippage, for example /slippage Hibachi BTC",
+            "/orderspread - show $100k order-size spread rows for every market",
+            "/orderspread SYMBOL - show $100k order-size spread rows across exchanges",
+            "/orderspread EXCHANGE - show $100k order-size spread rows for one exchange",
+            "/orderspread EXCHANGE SYMBOL - show order-size spread details",
             "/spreads - show spread rows for every monitored market",
             "/spreads EXCHANGE - show spread rows for one exchange",
-            "/spreads SYMBOL - show spread rows for one market across exchanges",
+            "/spreads SYMBOL - show spread rows for one market across exchanges, for example /spreads BTC",
             "/spreads EXCHANGE SYMBOL - show one market, for example /spreads Hibachi BTC-PERP",
             "",
             "Automatic monitor: OK report every 6 hours, instant alert on collector/DB/log issues.",
@@ -475,10 +484,14 @@ def command_arguments(text: str) -> list[str]:
 
 
 def format_slippage_command(db_path: Path, args: list[str]) -> str:
+    if len(args) == 1 and _looks_like_symbol(args[0]):
+        symbol = normalize_market_symbol(args[0])
+        books = read_latest_orderbooks(db_path, symbol=symbol)
+        return format_slippage_rows_message(books, f"all exchanges {symbol}")
     if len(args) < 2:
-        return "Usage: /slippage EXCHANGE SYMBOL\nExample: /slippage Hibachi BTC-PERP"
+        return "Usage: /slippage SYMBOL or /slippage EXCHANGE SYMBOL\nExample: /slippage BTC\nExample: /slippage Hibachi BTC"
     exchange_id = args[0]
-    symbol = args[1].upper()
+    symbol = normalize_market_symbol(args[1])
     book = read_latest_orderbook(db_path, exchange_id, symbol)
     if book is None:
         return f"No market data found for {exchange_id} {symbol}."
@@ -496,16 +509,291 @@ def format_spreads_command(db_path: Path, args: list[str]) -> str:
     if len(args) == 0:
         return format_spread_rows_message(read_spread_rows(db_path), "all exchanges all markets")
     elif len(args) == 1 and _looks_like_symbol(args[0]):
-        symbol = args[0].upper()
+        symbol = normalize_market_symbol(args[0])
         return format_spread_rows_message(read_spread_rows(db_path, symbol=symbol), f"all exchanges {symbol}")
     elif len(args) == 1:
         exchange_id = args[0]
         return format_spread_rows_message(read_spread_rows(db_path, exchange_id=exchange_id), f"{exchange_id} all markets")
     else:
-        summary = read_spread_summary(db_path, exchange_id=args[0], symbol=args[1].upper())
+        summary = read_spread_summary(db_path, exchange_id=args[0], symbol=normalize_market_symbol(args[1]))
         if summary is None:
             return f"No spread data found for {' '.join(args)}."
         return format_spread_summary_message(summary)
+
+
+def format_order_spread_command(
+    db_path: Path,
+    args: list[str],
+    list_notional: int = DEFAULT_ORDER_SPREAD_LIST_NOTIONAL,
+) -> str:
+    if len(args) == 0:
+        return format_order_spread_rows_message(
+            read_order_spread_rows(db_path, notional=list_notional),
+            "all exchanges all markets",
+            list_notional,
+        )
+    if len(args) == 1 and _looks_like_symbol(args[0]):
+        symbol = normalize_market_symbol(args[0])
+        return format_order_spread_rows_message(
+            read_order_spread_rows(db_path, symbol=symbol, notional=list_notional),
+            f"all exchanges {symbol}",
+            list_notional,
+        )
+    if len(args) == 1:
+        exchange_id = args[0]
+        return format_order_spread_rows_message(
+            read_order_spread_rows(db_path, exchange_id=exchange_id, notional=list_notional),
+            f"{exchange_id} all markets",
+            list_notional,
+        )
+    exchange_id = args[0]
+    symbol = normalize_market_symbol(args[1])
+    return format_order_spread_detail_message(
+        read_order_spread_detail(db_path, exchange_id, symbol),
+        f"{exchange_id} {symbol}",
+    )
+
+
+def read_order_spread_rows(
+    db_path: Path,
+    exchange_id: str | None = None,
+    symbol: str | None = None,
+    notional: int = DEFAULT_ORDER_SPREAD_LIST_NOTIONAL,
+) -> list[dict[str, object]]:
+    if not db_path.exists():
+        return []
+    uri = f"{db_path.resolve().as_uri()}?mode=ro"
+    rows: list[dict[str, object]] = []
+    with sqlite3.connect(uri, uri=True, timeout=30) as conn:
+        conn.row_factory = sqlite3.Row
+        latest_rows = _latest_snapshot_rows(conn, exchange_id, symbol)
+        for latest in latest_rows:
+            latest_at = from_iso(str(latest["timestamp"]))
+            current = _order_spread_for_snapshot(conn, latest, float(notional))
+            averages = {
+                label: _average_order_spread_bps(
+                    conn,
+                    str(latest["exchange_id"]),
+                    str(latest["symbol"]),
+                    latest_at,
+                    DEFAULT_AVERAGE_WINDOWS[label],
+                    float(notional),
+                )
+                for label in ORDER_SPREAD_WINDOWS
+            }
+            rows.append(
+                {
+                    "exchange_id": str(latest["exchange_id"]),
+                    "symbol": str(latest["symbol"]),
+                    "timestamp": latest_at,
+                    "current": current,
+                    "averages": averages,
+                }
+            )
+    return rows
+
+
+def read_order_spread_detail(
+    db_path: Path,
+    exchange_id: str,
+    symbol: str,
+) -> list[dict[str, object]]:
+    if not db_path.exists():
+        return []
+    uri = f"{db_path.resolve().as_uri()}?mode=ro"
+    rows: list[dict[str, object]] = []
+    with sqlite3.connect(uri, uri=True, timeout=30) as conn:
+        conn.row_factory = sqlite3.Row
+        latest_rows = _latest_snapshot_rows(conn, exchange_id, symbol)
+        if not latest_rows:
+            return []
+        latest = latest_rows[0]
+        latest_at = from_iso(str(latest["timestamp"]))
+        for notional in DEFAULT_SLIPPAGE_NOTIONALS:
+            current = _order_spread_for_snapshot(conn, latest, float(notional))
+            averages = {
+                label: _average_order_spread_bps(
+                    conn,
+                    str(latest["exchange_id"]),
+                    str(latest["symbol"]),
+                    latest_at,
+                    DEFAULT_AVERAGE_WINDOWS[label],
+                    float(notional),
+                )
+                for label in ORDER_SPREAD_WINDOWS
+            }
+            rows.append(
+                {
+                    "notional": notional,
+                    "timestamp": latest_at,
+                    "current": current,
+                    "averages": averages,
+                }
+            )
+    return rows
+
+
+def _latest_snapshot_rows(
+    conn: sqlite3.Connection,
+    exchange_id: str | None = None,
+    symbol: str | None = None,
+) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT latest.*
+        FROM market_snapshots latest
+        JOIN (
+            SELECT exchange_id, symbol, MAX(id) AS latest_id
+            FROM market_snapshots
+            WHERE (? IS NULL OR lower(exchange_id) = lower(?))
+              AND (? IS NULL OR upper(symbol) = upper(?))
+            GROUP BY exchange_id, symbol
+        ) grouped ON grouped.latest_id = latest.id
+        ORDER BY latest.exchange_id ASC, latest.symbol ASC
+        """,
+        (exchange_id, exchange_id, symbol, symbol),
+    ).fetchall()
+
+
+def _average_order_spread_bps(
+    conn: sqlite3.Connection,
+    exchange_id: str,
+    symbol: str,
+    latest_at: datetime,
+    seconds: int,
+    notional: float,
+) -> tuple[float | None, int]:
+    since = datetime.fromtimestamp(latest_at.timestamp() - seconds, timezone.utc).isoformat()
+    snapshots = conn.execute(
+        """
+        SELECT id, best_bid, best_ask
+        FROM market_snapshots
+        WHERE exchange_id = ?
+          AND symbol = ?
+          AND timestamp >= ?
+        ORDER BY timestamp DESC, id DESC
+        """,
+        (exchange_id, symbol, since),
+    ).fetchall()
+    estimates = [
+        estimate
+        for snapshot in snapshots
+        if (estimate := _order_spread_for_snapshot(conn, snapshot, notional)).complete
+        and estimate.spread_bps is not None
+    ]
+    if not estimates:
+        return None, 0
+    return sum(float(item.spread_bps) for item in estimates) / len(estimates), len(estimates)
+
+
+def _order_spread_for_snapshot(
+    conn: sqlite3.Connection,
+    snapshot: sqlite3.Row,
+    notional: float,
+) -> OrderSpreadEstimate:
+    bids, asks = _orderbook_for_snapshot(conn, int(snapshot["id"]))
+    reference_price = (float(snapshot["best_bid"]) + float(snapshot["best_ask"])) / 2
+    return estimate_order_spread(
+        notional,
+        reference_price=reference_price,
+        bids=bids,
+        asks=asks,
+    )
+
+
+def _orderbook_for_snapshot(
+    conn: sqlite3.Connection,
+    snapshot_id: int,
+) -> tuple[tuple[OrderBookLevel, ...], tuple[OrderBookLevel, ...]]:
+    levels = conn.execute(
+        """
+        SELECT side, price, size, level_index
+        FROM orderbook_levels
+        WHERE snapshot_id = ?
+        ORDER BY side ASC, level_index ASC
+        """,
+        (snapshot_id,),
+    ).fetchall()
+    bids = tuple(
+        OrderBookLevel(
+            side=BookSide.BID,
+            price=float(level["price"]),
+            size=float(level["size"]),
+            level_index=int(level["level_index"]),
+        )
+        for level in levels
+        if level["side"] == BookSide.BID.value
+    )
+    asks = tuple(
+        OrderBookLevel(
+            side=BookSide.ASK,
+            price=float(level["price"]),
+            size=float(level["size"]),
+            level_index=int(level["level_index"]),
+        )
+        for level in levels
+        if level["side"] == BookSide.ASK.value
+    )
+    return bids, asks
+
+
+def format_order_spread_rows_message(
+    rows: list[dict[str, object]],
+    scope: str,
+    notional: int,
+) -> str:
+    if not rows:
+        return f"No order spread data found for {scope}."
+    lines = [
+        f"OrderSpread {scope} notional={format_notional(float(notional))}",
+        "market current 5m 1h 24h 7d 30d",
+    ]
+    for row in rows:
+        averages = row["averages"]
+        lines.append(
+            f"{row['exchange_id']} {row['symbol']} "
+            f"{_order_spread_cell(row['current'])} "
+            f"{_avg_order_spread_cell(averages['5m'])} "
+            f"{_avg_order_spread_cell(averages['1h'])} "
+            f"{_avg_order_spread_cell(averages['24h'])} "
+            f"{_avg_order_spread_cell(averages['7d'])} "
+            f"{_avg_order_spread_cell(averages['30d'])}"
+        )
+    return "\n".join(lines)
+
+
+def format_order_spread_detail_message(rows: list[dict[str, object]], scope: str) -> str:
+    if not rows:
+        return f"No order spread data found for {scope}."
+    lines = [
+        f"OrderSpread {scope}",
+        f"latest: {rows[0]['timestamp']}",
+        "notional current 5m 1h 24h 7d 30d",
+    ]
+    for row in rows:
+        averages = row["averages"]
+        lines.append(
+            f"{format_notional(float(row['notional']))} "
+            f"{_order_spread_cell(row['current'])} "
+            f"{_avg_order_spread_cell(averages['5m'])} "
+            f"{_avg_order_spread_cell(averages['1h'])} "
+            f"{_avg_order_spread_cell(averages['24h'])} "
+            f"{_avg_order_spread_cell(averages['7d'])} "
+            f"{_avg_order_spread_cell(averages['30d'])}"
+        )
+    return "\n".join(lines)
+
+
+def _order_spread_cell(value: OrderSpreadEstimate) -> str:
+    suffix = "" if value.complete else "*"
+    return f"{format_bps(value.spread_bps)}{suffix}"
+
+
+def _avg_order_spread_cell(value: tuple[float | None, int]) -> str:
+    avg, samples = value
+    if avg is None:
+        return f"n/a({samples})"
+    return f"{avg:.2f}({samples})"
 
 
 def read_spread_rows(
@@ -593,6 +881,15 @@ def _avg_bps(value: tuple[float | None, int]) -> str:
     if avg is None:
         return f"n/a({samples})"
     return f"{avg:.2f}({samples})"
+
+
+def normalize_market_symbol(value: str) -> str:
+    normalized = value.strip().upper()
+    if not normalized:
+        return normalized
+    if "-" in normalized or normalized.endswith("USD"):
+        return normalized
+    return f"{normalized}-PERP"
 
 
 def read_spread_summary(
@@ -710,7 +1007,28 @@ def format_spread_summary_message(summary: dict[str, object]) -> str:
 
 def _looks_like_symbol(value: str) -> bool:
     normalized = value.upper()
-    return normalized.endswith("-PERP") or normalized.endswith("USD")
+    known_bases = {
+        "BTC",
+        "ETH",
+        "EUR",
+        "SOL",
+        "HYPE",
+        "SAMSUNG",
+        "SKHYNICS",
+        "SKHYNIX",
+        "EWY",
+        "WTI",
+        "BRENT",
+        "WTIOIL",
+        "BRENTOIL",
+        "GOLD",
+        "SILVER",
+        "XAU",
+        "XAG",
+        "PAXG",
+        "CL",
+    }
+    return normalized in known_bases or normalized.endswith("-PERP") or normalized.endswith("USD")
 
 
 def _spread_scope_label(exchange_id: str | None, symbol: str | None) -> str:
@@ -787,6 +1105,39 @@ def read_latest_orderbook(
     )
 
 
+def read_latest_orderbooks(
+    db_path: Path,
+    exchange_id: str | None = None,
+    symbol: str | None = None,
+) -> list[tuple[dict[str, object], tuple[OrderBookLevel, ...], tuple[OrderBookLevel, ...]]]:
+    if not db_path.exists():
+        return []
+    uri = f"{db_path.resolve().as_uri()}?mode=ro"
+    with sqlite3.connect(uri, uri=True, timeout=30) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            """
+            SELECT latest.exchange_id, latest.symbol
+            FROM market_snapshots latest
+            JOIN (
+                SELECT exchange_id, symbol, MAX(id) AS latest_id
+                FROM market_snapshots
+                WHERE (? IS NULL OR lower(exchange_id) = lower(?))
+                  AND (? IS NULL OR upper(symbol) = upper(?))
+                GROUP BY exchange_id, symbol
+            ) grouped ON grouped.latest_id = latest.id
+            ORDER BY latest.exchange_id ASC, latest.symbol ASC
+            """,
+            (exchange_id, exchange_id, symbol, symbol),
+        ).fetchall()
+    books = []
+    for row in rows:
+        book = read_latest_orderbook(db_path, str(row["exchange_id"]), str(row["symbol"]))
+        if book is not None:
+            books.append(book)
+    return books
+
+
 def format_simple_slippage_message(
     snapshot: dict[str, object],
     estimates: list[SlippageEstimate],
@@ -803,6 +1154,41 @@ def format_simple_slippage_message(
             f"{format_bps(item.slippage_bps)} filled={format_notional(item.filled_notional)}{complete}"
         )
     return "\n".join(lines)
+
+
+def format_slippage_rows_message(
+    books: list[tuple[dict[str, object], tuple[OrderBookLevel, ...], tuple[OrderBookLevel, ...]]],
+    scope: str,
+) -> str:
+    if not books:
+        return f"No slippage data found for {scope}."
+    lines = [
+        f"Slippage {scope}",
+        "market buy10k buy100k buy1M sell10k sell100k sell1M",
+    ]
+    for snapshot, bids, asks in books:
+        estimates = estimate_slippage_grid(
+            DEFAULT_SLIPPAGE_NOTIONALS,
+            reference_price=snapshot["mid_price"],
+            bids=bids,
+            asks=asks,
+        )
+        by_key = {(item.side.value, int(item.notional_usd)): item for item in estimates}
+        lines.append(
+            f"{snapshot['exchange_id']} {snapshot['symbol']} "
+            f"{_slip_cell(by_key[('buy', 10_000)])} "
+            f"{_slip_cell(by_key[('buy', 100_000)])} "
+            f"{_slip_cell(by_key[('buy', 1_000_000)])} "
+            f"{_slip_cell(by_key[('sell', 10_000)])} "
+            f"{_slip_cell(by_key[('sell', 100_000)])} "
+            f"{_slip_cell(by_key[('sell', 1_000_000)])}"
+        )
+    return "\n".join(lines)
+
+
+def _slip_cell(item: SlippageEstimate) -> str:
+    suffix = "" if item.complete else "*"
+    return f"{format_bps(item.slippage_bps)}{suffix}"
 
 
 def format_notional(value: float) -> str:

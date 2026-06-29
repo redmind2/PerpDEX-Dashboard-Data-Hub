@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .models import BookSide, OrderBookLevel, SlippageEstimate, TradeSide
+from .models import BookSide, OrderBookLevel, OrderSpreadEstimate, SlippageEstimate, TradeSide
 
 
 def estimate_slippage(
@@ -78,4 +78,66 @@ def estimate_slippage_grid(
                 )
             )
     return estimates
+
+
+def estimate_order_spread(
+    notional_usd: float,
+    reference_price: float,
+    bids: tuple[OrderBookLevel, ...],
+    asks: tuple[OrderBookLevel, ...],
+) -> OrderSpreadEstimate:
+    buy = estimate_slippage(
+        TradeSide.BUY,
+        notional_usd,
+        reference_price,
+        bids=bids,
+        asks=asks,
+    )
+    sell = estimate_slippage(
+        TradeSide.SELL,
+        notional_usd,
+        reference_price,
+        bids=bids,
+        asks=asks,
+    )
+    if buy.average_price is None or sell.average_price is None:
+        return OrderSpreadEstimate(
+            notional_usd=notional_usd,
+            average_buy_price=buy.average_price,
+            average_sell_price=sell.average_price,
+            spread=None,
+            spread_bps=None,
+            buy_filled_notional=buy.filled_notional,
+            sell_filled_notional=sell.filled_notional,
+            complete=False,
+        )
+
+    spread = buy.average_price - sell.average_price
+    return OrderSpreadEstimate(
+        notional_usd=notional_usd,
+        average_buy_price=buy.average_price,
+        average_sell_price=sell.average_price,
+        spread=spread,
+        spread_bps=spread / reference_price * 10_000,
+        buy_filled_notional=buy.filled_notional,
+        sell_filled_notional=sell.filled_notional,
+        complete=buy.complete and sell.complete,
+    )
+
+
+def estimate_order_spread_grid(
+    notionals: tuple[int, ...],
+    reference_price: float,
+    bids: tuple[OrderBookLevel, ...],
+    asks: tuple[OrderBookLevel, ...],
+) -> list[OrderSpreadEstimate]:
+    return [
+        estimate_order_spread(
+            float(notional),
+            reference_price=reference_price,
+            bids=bids,
+            asks=asks,
+        )
+        for notional in notionals
+    ]
 
