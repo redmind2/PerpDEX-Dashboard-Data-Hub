@@ -8,7 +8,7 @@ New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
 $runnerLog = Join-Path $logDir "live-test-runner.log"
 $pidPath = Join-Path $repoRoot "data\live-test.pid"
-$PID | Set-Content -Path $pidPath -Encoding UTF8
+$PID | Set-Content -Path $pidPath -Encoding ASCII
 
 function Get-EnvValue {
     param(

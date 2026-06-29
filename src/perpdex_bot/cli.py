@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+import os
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -42,6 +43,20 @@ from .exchanges import create_public_collector, supported_public_exchanges
 from .mock_data import seed_mock_data
 from .models import CollectorMarketStatus, MarketOverviewRow, utc_now
 from .repositories import MarketDataRepository
+from .telegram_monitor import (
+    DEFAULT_CHECK_INTERVAL_SECONDS,
+    DEFAULT_PID_PATH,
+    DEFAULT_RUNNER_LOG_PATH,
+    DEFAULT_STATUS_INTERVAL_SECONDS,
+    DEFAULT_STALE_AFTER_SECONDS,
+    TELEGRAM_CHECK_INTERVAL_ENV_VAR,
+    TELEGRAM_RUNNER_LOG_ENV_VAR,
+    TELEGRAM_PID_PATH_ENV_VAR,
+    TELEGRAM_STATUS_INTERVAL_ENV_VAR,
+    TELEGRAM_STALE_AFTER_ENV_VAR,
+    config_from_args,
+    run_telegram_monitor,
+)
 
 
 LOGGER = logging.getLogger("perpdex_bot.collector")
@@ -131,6 +146,42 @@ def build_parser() -> argparse.ArgumentParser:
     markets.add_argument("--config", type=Path, default=DEFAULT_MARKET_CONFIG_PATH)
     markets.add_argument("--failed-only", action="store_true", help="Only show markets with active failures")
     markets.add_argument("--log-file", type=Path, default=DEFAULT_COLLECTOR_LOG_PATH)
+
+    telegram_monitor = sub.add_parser("telegram-monitor", help="Send Telegram health alerts for the live collector")
+    telegram_monitor.add_argument("--bot-token", default=None, help="Telegram bot token; defaults to .env")
+    telegram_monitor.add_argument("--chat-id", default=None, help="Telegram chat id; defaults to .env")
+    telegram_monitor.add_argument("--market-config", type=Path, default=DEFAULT_MARKET_CONFIG_PATH)
+    telegram_monitor.add_argument(
+        "--status-interval",
+        type=int,
+        default=_env_int(TELEGRAM_STATUS_INTERVAL_ENV_VAR, DEFAULT_STATUS_INTERVAL_SECONDS),
+        help="Seconds between OK status messages. Defaults to 21600.",
+    )
+    telegram_monitor.add_argument(
+        "--check-interval",
+        type=int,
+        default=_env_int(TELEGRAM_CHECK_INTERVAL_ENV_VAR, DEFAULT_CHECK_INTERVAL_SECONDS),
+        help="Seconds between health checks. Defaults to 60.",
+    )
+    telegram_monitor.add_argument(
+        "--stale-after",
+        type=int,
+        default=_env_int(TELEGRAM_STALE_AFTER_ENV_VAR, DEFAULT_STALE_AFTER_SECONDS),
+        help="Alert if the latest snapshot is older than this many seconds. Defaults to 900.",
+    )
+    telegram_monitor.add_argument(
+        "--pid-path",
+        type=Path,
+        default=Path(os.environ.get(TELEGRAM_PID_PATH_ENV_VAR, "")) if os.environ.get(TELEGRAM_PID_PATH_ENV_VAR) else DEFAULT_PID_PATH,
+    )
+    telegram_monitor.add_argument(
+        "--runner-log",
+        type=Path,
+        default=Path(os.environ.get(TELEGRAM_RUNNER_LOG_ENV_VAR, "")) if os.environ.get(TELEGRAM_RUNNER_LOG_ENV_VAR) else DEFAULT_RUNNER_LOG_PATH,
+    )
+    telegram_monitor.add_argument("--collector-log", type=Path, default=collector_log_path())
+    telegram_monitor.add_argument("--once", action="store_true", help="Run one health check and exit")
+    telegram_monitor.add_argument("--dry-run", action="store_true", help="Print messages instead of sending Telegram")
     return parser
 
 
@@ -145,6 +196,12 @@ def _add_optional_market_filters(parser: argparse.ArgumentParser) -> None:
 
 
 async def run(args: argparse.Namespace) -> None:
+    if args.command == "telegram-monitor":
+        # Build once here so missing/invalid monitor options fail before the long-running loop starts.
+        config_from_args(args)
+        await run_telegram_monitor(args)
+        return
+
     if args.command == "archive-month":
         result = archive_month(
             args.db,
@@ -406,6 +463,11 @@ def _parse_archive_now(value: str | None) -> date | None:
     if value is None:
         return None
     return date.fromisoformat(value)
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    return default if not raw else int(raw)
 
 
 def _configure_collector_logging(path: Path) -> None:

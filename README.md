@@ -149,6 +149,61 @@ powershell -ExecutionPolicy Bypass -File .\scripts\live-test-loop.ps1
 .\perpdex.cmd prune --days 90
 ```
 
+## Telegram Health Monitor
+
+The Telegram monitor is local alerting only. Keep the real bot token and chat id in `.env`; do not commit them. It sends an OK status every 6 hours and alerts within the next check interval when the collector process stops, the DB becomes stale, collector failures appear, or new error lines appear in the live logs.
+
+Add these local `.env` values:
+
+```env
+PERPDEX_TELEGRAM_BOT_TOKEN=
+PERPDEX_TELEGRAM_CHAT_ID=
+PERPDEX_TELEGRAM_STATUS_INTERVAL=21600
+PERPDEX_TELEGRAM_CHECK_INTERVAL=60
+PERPDEX_TELEGRAM_STALE_AFTER=900
+PERPDEX_LIVE_PID_PATH=data/live-test.pid
+PERPDEX_LIVE_RUNNER_LOG_PATH=data/logs/live-test-runner.log
+```
+
+Telegram commands:
+
+```text
+/help - show command list
+/status - show collector and DB health
+/storage - show DB size and row counts
+/markets - show monitored exchanges and markets
+/failures - show active collector failures
+/slippage Hibachi BTC-PERP - show simple slippage for one market
+/spreads - show spread rows for every monitored market
+/spreads Hibachi - show spread rows for one exchange
+/spreads BTC-PERP - show spread rows for one market across exchanges
+/spreads Hibachi BTC-PERP - show one market's current and average spreads
+```
+
+Preview one monitor message without sending Telegram:
+
+```powershell
+.\perpdex.cmd telegram-monitor --once --dry-run
+```
+
+Run the monitor in the current PowerShell window:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\telegram-monitor.ps1
+```
+
+Run the monitor hidden in the background:
+
+```powershell
+Start-Process powershell -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File','.\scripts\telegram-monitor.ps1') -WorkingDirectory (Get-Location).Path -WindowStyle Hidden
+```
+
+Stop the monitor:
+
+```powershell
+Stop-Process -Id (Get-Content data\telegram-monitor.pid)
+```
+
 ## Current Public Collectors
 
 - Hibachi: `BTC-PERP`, `ETH-PERP`, `EUR-PERP`, `SOL-PERP`, `HYPE-PERP`
