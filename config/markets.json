@@ -3,12 +3,32 @@
     {
       "exchange": "Hibachi",
       "enabled": true,
-      "symbols": ["BTC-PERP", "ETH-PERP", "EUR-PERP"]
+      "symbols": ["BTC-PERP", "ETH-PERP", "EUR-PERP", "SOL-PERP", "HYPE-PERP"]
     },
     {
       "exchange": "Rise",
       "enabled": true,
-      "symbols": ["BTC-PERP"]
+      "symbols": ["BTC-PERP", "ETH-PERP", "HYPE-PERP", "SOL-PERP"]
+    },
+    {
+      "exchange": "Hotstuff",
+      "enabled": true,
+      "symbols": ["BTC-PERP", "ETH-PERP", "HYPE-PERP", "SOL-PERP", "SILVER-PERP", "WTIOIL-PERP", "GOLD-PERP", "BRENTOIL-PERP"]
+    },
+    {
+      "exchange": "Hyperliquid",
+      "enabled": true,
+      "symbols": ["BTC-PERP", "ETH-PERP", "SOL-PERP", "HYPE-PERP", "SAMSUNG-PERP", "SKHYNICS-PERP", "EWY-PERP", "WTIOIL-PERP", "BRENTOIL-PERP", "GOLD-PERP", "SILVER-PERP"]
+    },
+    {
+      "exchange": "Lighter",
+      "enabled": true,
+      "symbols": ["BTC-PERP", "ETH-PERP", "SOL-PERP", "HYPE-PERP", "SAMSUNG-PERP", "SKHYNICS-PERP", "EWY-PERP", "WTI-PERP", "BRENT-PERP", "XAU-PERP", "PAXG-PERP", "XAG-PERP"]
+    },
+    {
+      "exchange": "Pacifica",
+      "enabled": true,
+      "symbols": ["BTC-PERP", "ETH-PERP", "SOL-PERP", "HYPE-PERP", "GOLD-PERP", "PAXG-PERP", "CL-PERP", "SILVER-PERP", "SKHYNIX-PERP", "SAMSUNG-PERP"]
     }
   ]
 }

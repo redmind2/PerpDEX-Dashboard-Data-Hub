@@ -18,6 +18,7 @@ HIBACHI_SYMBOLS = {
     "BTC-PERP": "BTC/USDT-P",
     "ETH-PERP": "ETH/USDT-P",
     "EUR-PERP": "EUR/USDT-P",
+    "HYPE-PERP": "HYPE/USDT-P",
     "SOL-PERP": "SOL/USDT-P",
 }
 HIBACHI_ORDERBOOK_GRANULARITIES = {
@@ -58,7 +59,7 @@ class HibachiPublicClient:
         raise RuntimeError("Hibachi public API request failed after retries")
 
     def _get_json_sync(self, url: str) -> Any:
-        request = Request(url, headers={"User-Agent": "perpdex-phase2a-public-collector/0.1"})
+        request = Request(url, headers={"User-Agent": "perpdex-data-hub-public-collector/0.1"})
         with urlopen(request, timeout=self.settings.timeout_seconds) as response:
             charset = response.headers.get_content_charset() or "utf-8"
             return json.loads(response.read().decode(charset))
@@ -118,7 +119,10 @@ def _snapshot_from_payload(
     bids = _levels(_orderbook_side_levels(orderbook, "bid"), BookSide.BID)
     asks = _levels(_orderbook_side_levels(orderbook, "ask"), BookSide.ASK)
     if not bids or not asks:
-        raise ValueError("Hibachi orderbook response did not include both bids and asks")
+        detail = "Hibachi orderbook response did not include both bids and asks"
+        if symbol.upper().replace("_", "-").replace("/", "-") == "EUR-PERP":
+            detail += "; treating EUR-PERP null orderbook as a temporary public API gap"
+        raise ValueError(detail)
     return MarketSnapshot(
         exchange_id=exchange_id,
         symbol=symbol,

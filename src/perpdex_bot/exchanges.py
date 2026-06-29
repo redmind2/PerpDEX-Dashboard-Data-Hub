@@ -4,6 +4,10 @@ from collections.abc import Callable
 
 from .collectors import LivePublicCollector, PublicAPISettings
 from .hibachi import HibachiPublicCollector
+from .hotstuff import HotstuffPublicCollector
+from .hyperliquid import HyperliquidPublicCollector
+from .lighter import LighterPublicCollector
+from .pacifica import PacificaPublicCollector
 from .rise import RisePublicCollector
 
 
@@ -22,10 +26,37 @@ def _rise(settings: PublicAPISettings) -> LivePublicCollector:
     return collector
 
 
+def _hotstuff(settings: PublicAPISettings) -> LivePublicCollector:
+    collector = HotstuffPublicCollector()
+    collector.client.settings = settings
+    return collector
+
+
+def _hyperliquid(settings: PublicAPISettings) -> LivePublicCollector:
+    collector = HyperliquidPublicCollector()
+    collector.client.settings = settings
+    return collector
+
+
+def _lighter(settings: PublicAPISettings) -> LivePublicCollector:
+    collector = LighterPublicCollector()
+    collector.client.settings = settings
+    return collector
+
+
+def _pacifica(settings: PublicAPISettings) -> LivePublicCollector:
+    collector = PacificaPublicCollector()
+    collector.client.settings = settings
+    return collector
+
+
 PUBLIC_COLLECTOR_FACTORIES: dict[str, CollectorFactory] = {
     "hibachi": _hibachi,
+    "hotstuff": _hotstuff,
+    "hyperliquid": _hyperliquid,
+    "lighter": _lighter,
+    "pacifica": _pacifica,
     "rise": _rise,
-    "risex": _rise,
 }
 
 

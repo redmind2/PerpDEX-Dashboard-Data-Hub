@@ -26,9 +26,15 @@ RISE_MARKETS_PATH = "/v1/markets"
 RISE_ORDERBOOK_PATH = "/v1/orderbook"
 RISE_MARKET_IDS = {
     "BTC-PERP": 1,
+    "ETH-PERP": 2,
+    "SOL-PERP": 4,
+    "HYPE-PERP": 15,
 }
 RISE_MARKET_DISPLAY_NAMES = {
     "BTC-PERP": "BTC/USDC",
+    "ETH-PERP": "ETH/USDC",
+    "SOL-PERP": "SOL/USDC",
+    "HYPE-PERP": "HYPE/USDC",
 }
 
 
@@ -80,7 +86,7 @@ class RisePublicClient:
         raise RuntimeError("Rise public API request failed after retries")
 
     def _get_json_sync(self, url: str) -> Any:
-        request = Request(url, headers={"User-Agent": "perpdex-phase2e-public-collector/0.1"})
+        request = Request(url, headers={"User-Agent": "perpdex-data-hub-public-collector/0.1"})
         with urlopen(request, timeout=self.settings.timeout_seconds) as response:
             charset = response.headers.get_content_charset() or "utf-8"
             return json.loads(response.read().decode(charset))

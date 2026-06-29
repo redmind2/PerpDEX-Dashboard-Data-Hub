@@ -8,13 +8,21 @@ from pathlib import Path
 
 from .config import (
     DEFAULT_COLLECTOR_LOG_PATH,
-    DEFAULT_DB_PATH,
     DEFAULT_MARKET_CONFIG_PATH,
     DEFAULT_SLIPPAGE_NOTIONALS,
+    DB_PATH_ENV_VAR,
     MARKET_RETENTION_DAYS,
-    MARKET_SNAPSHOT_INTERVAL_SECONDS,
     MarketConfig,
+    collection_interval_seconds,
+    collector_log_path,
+    default_db_path,
+    load_env_file,
     load_market_config,
+    orderbook_depth_limit,
+    orderbook_granularity,
+    orderbook_max_notional_depth,
+    public_api_retries,
+    public_api_timeout_seconds,
 )
 from .calculations import estimate_slippage_grid
 from .dashboard import (
@@ -28,7 +36,7 @@ from .dashboard import (
     render_snapshot,
 )
 from .db import AsyncSQLite
-from .collectors import LivePublicCollector, PublicAPISettings
+from .collectors import LivePublicCollector, PublicAPISettings, trim_snapshot_to_notional_depth
 from .exchanges import create_public_collector, supported_public_exchanges
 from .mock_data import seed_mock_data
 from .models import CollectorMarketStatus, MarketOverviewRow, utc_now
@@ -40,7 +48,12 @@ LOGGER = logging.getLogger("perpdex_bot.collector")
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="PerpDEX public market data hub CLI")
-    parser.add_argument("--db", type=Path, default=DEFAULT_DB_PATH, help="SQLite database path")
+    parser.add_argument(
+        "--db",
+        type=Path,
+        default=default_db_path(),
+        help=f"SQLite database path. Defaults to ${DB_PATH_ENV_VAR} or data/perpdex_phase1.sqlite",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("init-db", help="Create or migrate the local SQLite database schema")
@@ -57,13 +70,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Internal symbol, for example BTC-PERP. Can be passed more than once.",
     )
     collect_live.add_argument("--config", type=Path, default=DEFAULT_MARKET_CONFIG_PATH)
-    collect_live.add_argument("--interval", type=int, default=MARKET_SNAPSHOT_INTERVAL_SECONDS)
+    collect_live.add_argument("--interval", type=int, default=collection_interval_seconds())
     collect_live.add_argument("--once", action="store_true", help="Collect one sample and exit")
-    collect_live.add_argument("--depth", type=int, default=100)
-    collect_live.add_argument("--granularity", type=float, default=0.1)
-    collect_live.add_argument("--timeout", type=float, default=10.0)
-    collect_live.add_argument("--retries", type=int, default=3)
-    collect_live.add_argument("--log-file", type=Path, default=DEFAULT_COLLECTOR_LOG_PATH)
+    collect_live.add_argument("--depth", type=int, default=orderbook_depth_limit())
+    collect_live.add_argument(
+        "--max-notional-depth",
+        type=_positive_float,
+        default=orderbook_max_notional_depth(),
+        help="Save orderbook levels up to this USD notional per side, for example 1000000",
+    )
+    collect_live.add_argument("--granularity", type=float, default=orderbook_granularity())
+    collect_live.add_argument("--timeout", type=float, default=public_api_timeout_seconds())
+    collect_live.add_argument("--retries", type=int, default=public_api_retries())
+    collect_live.add_argument("--log-file", type=Path, default=collector_log_path())
 
     dashboard = sub.add_parser("dashboard", help="Show current market, spread, funding, and slippage")
     _add_market_filters(dashboard)
@@ -152,7 +171,7 @@ async def run(args: argparse.Namespace) -> None:
             print(f"- orderbook levels: {levels:,}")
             print(f"- funding rates: {funding:,}")
             print(f"- default market retention: {MARKET_RETENTION_DAYS} days")
-            print("- intended market collection cadence: 60 seconds")
+            print(f"- intended market collection cadence: {collection_interval_seconds()} seconds")
             return
 
         if args.command in {"collector-status", "status"}:
@@ -229,6 +248,7 @@ async def _run_live_collection(args: argparse.Namespace, repo: MarketDataReposit
         timeout_seconds=args.timeout,
         retries=args.retries,
         orderbook_depth_limit=args.depth,
+        orderbook_max_notional_depth=args.max_notional_depth,
         orderbook_granularity=args.granularity,
     )
     collector = create_public_collector(args.exchange, settings)
@@ -246,6 +266,7 @@ async def _run_live_collection(args: argparse.Namespace, repo: MarketDataReposit
                     repo=repo,
                     symbol=symbol,
                     next_collection_at=next_collection_at,
+                    max_notional_depth=settings.orderbook_max_notional_depth,
                 )
         if args.once:
             return
@@ -257,26 +278,28 @@ async def _collect_market_once(
     repo: MarketDataRepository,
     symbol: str,
     next_collection_at: datetime,
+    max_notional_depth: float | None,
 ) -> None:
     exchange_id = collector.exchange_id
     try:
         result = await collector.collect_once(symbol)
-        await repo.save_snapshot(result.snapshot)
+        snapshot = trim_snapshot_to_notional_depth(result.snapshot, max_notional_depth)
+        await repo.save_snapshot(snapshot)
         saved_funding = 0
         for funding in result.funding_rates:
             if await repo.save_funding_rate_if_new(funding) is not None:
                 saved_funding += 1
         collected_at = utc_now()
         await repo.mark_collection_success(
-            result.snapshot.exchange_id,
-            result.snapshot.symbol,
+            snapshot.exchange_id,
+            snapshot.symbol,
             collected_at,
             next_collection_at,
         )
         message = (
             "Collected public data: "
-            f"{result.snapshot.exchange_id} {result.snapshot.symbol} "
-            f"spread={result.snapshot.spread_bps:.2f} bps "
+            f"{snapshot.exchange_id} {snapshot.symbol} "
+            f"spread={snapshot.spread_bps:.2f} bps "
             f"funding_rows={saved_funding}"
         )
         LOGGER.info(message)
@@ -343,6 +366,13 @@ def _seconds(value: int) -> timedelta:
     return timedelta(seconds=value)
 
 
+def _positive_float(value: str) -> float:
+    parsed = float(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be greater than 0")
+    return parsed
+
+
 def _configure_collector_logging(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if LOGGER.handlers:
@@ -356,6 +386,7 @@ def _configure_collector_logging(path: Path) -> None:
 
 
 def main() -> None:
+    load_env_file()
     parser = build_parser()
     args = parser.parse_args()
     asyncio.run(run(args))

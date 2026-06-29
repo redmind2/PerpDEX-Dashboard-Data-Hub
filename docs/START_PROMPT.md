@@ -1,34 +1,103 @@
 # Codex Start Prompt - PerpDEX Dashboard / Data Hub
 
-너는 `PerpDEX Dashboard / Data Hub` 프로젝트를 담당한다.
+You are working on the `PerpDEX Dashboard / Data Hub` project.
 
-## 목표
-PerpDEX public market data를 수집하고, 저장하고, CLI/웹 대시보드에서 보여주는 공용 데이터 허브를 만든다. 이 프로젝트는 나중에 Pagu.info, PerpDEX Farming Bot, Cross Exchange Trading Bot이 같이 사용할 수 있는 데이터 계층이 된다.
+## Repo
 
-## 코드 레포
-- 새 레포: `C:\Users\USER\Documents\PerpDEX-Dashboard-Data-Hub`
-- 이전 구현 참고 레포: `C:\Users\USER\Documents\PerpDEX 파밍봇`
-- 이전 DB 참고: `C:\Users\USER\Documents\PerpDEX 파밍봇\data\perpdex_phase1.sqlite`
+`C:\Users\USER\Documents\PerpDEX-Dashboard-Data-Hub`
 
 ## Obsidian HQ
-- `C:\Users\USER\Desktop\Pagu's Works\06-Coding\PerpDEX Dashboard Data Hub`
 
-## 현재까지 검증된 이전 구현
-- Hibachi public collector: BTC-PERP, ETH-PERP, EUR-PERP
-- Rise public collector: BTC-PERP mapped to BTC/USDC, market_id 후보 1
-- CLI: `overview`, `status`, `storage`, `prune`, `collect-live`
-- PM2 collector config existed in previous repo
-- Phase 2E에서 PM2 online + overview OK까지 확인함
-- 현재 로컬 컴퓨터에서는 장기 DB 적재하지 않기로 했고 collector는 꺼둔 상태
+`C:\Users\USER\Desktop\Pagu's Works\06-Coding\PerpDEX Dashboard Data Hub`
 
-## 절대 범위 밖
-- wallet 연결 금지
-- private key/API key/signature/session key 금지
-- balance/position/order/cancel 기능 금지
-- 거래 실행 금지
+## Scope
 
-## 다음 작업 요청
-1. 이전 `PerpDEX 파밍봇` 레포의 public data collector/dashboard 구현을 새 `PerpDEX-Dashboard-Data-Hub` 레포로 옮기는 migration plan을 세워라.
-2. `data/`의 SQLite 실데이터와 로그는 복사하지 말고, 코드/설정/테스트/문서만 옮기는 방향으로 계획하라.
-3. 외부 DB(PostgreSQL/TimescaleDB 등)로 확장 가능한 구조를 제안하되, 우선은 local SQLite 호환을 유지하라.
-4. 초보자가 이해할 수 있게 파일 역할과 실행 명령을 쉽게 설명하라.
+This project is a public market data collector, local SQLite storage layer, CLI dashboard, and future shared data API foundation.
+
+Do not add wallet connection, private key, API key, signature, session key, balance, position, order, cancel, or trade execution features.
+
+## Config Split
+
+- Use `config\markets.json` for exchange and market selection.
+- Use `.env` for local runtime settings: DB path, collection interval, orderbook request depth, saved notional depth, API timeout/retries, and collector log path.
+- Do not put API keys, private keys, wallet secrets, session keys, or trading credentials in `.env`.
+
+## Current Public Collectors
+
+- Hibachi public collector: `BTC-PERP`, `ETH-PERP`, `EUR-PERP`, `SOL-PERP`, `HYPE-PERP`
+- Rise public collector: `BTC-PERP`, `ETH-PERP`, `HYPE-PERP`, `SOL-PERP`
+- Hotstuff public collector: `BTC-PERP`, `ETH-PERP`, `HYPE-PERP`, `SOL-PERP`, `SILVER-PERP`, `WTIOIL-PERP`, `GOLD-PERP`, `BRENTOIL-PERP`
+- Hyperliquid public collector: `BTC-PERP`, `ETH-PERP`, `SOL-PERP`, `HYPE-PERP`, `SAMSUNG-PERP`, `SKHYNICS-PERP`, `EWY-PERP`, `WTIOIL-PERP`, `BRENTOIL-PERP`, `GOLD-PERP`, `SILVER-PERP`
+- Lighter public collector: `BTC-PERP`, `ETH-PERP`, `SOL-PERP`, `HYPE-PERP`, `SAMSUNG-PERP`, `SKHYNICS-PERP`, `EWY-PERP`, `WTI-PERP`, `BRENT-PERP`, `XAU-PERP`, `PAXG-PERP`, `XAG-PERP`
+- Pacifica public collector: `BTC-PERP`, `ETH-PERP`, `SOL-PERP`, `HYPE-PERP`, `GOLD-PERP`, `PAXG-PERP`, `CL-PERP`, `SILVER-PERP`, `SKHYNIX-PERP`, `SAMSUNG-PERP`
+- Older notes may say `RiseX`; use `Rise` as the CLI exchange id.
+
+## Current CLI
+
+- `init-db`
+- `seed-mock`
+- `collect-live`
+- `overview`
+- `status`
+- `dashboard`
+- `storage`
+- `prune`
+
+## Local DB
+
+Default DB path:
+
+```text
+data/perpdex_phase1.sqlite
+```
+
+Override with:
+
+```powershell
+$env:PERPDEX_DB_PATH = "data\my-local.sqlite"
+```
+
+Or pass `--db` before the command name:
+
+```powershell
+.\perpdex.cmd --db data\my-local.sqlite init-db
+```
+
+Suggested live-test `.env`:
+
+```env
+PERPDEX_DB_PATH=data/live-30s-test.sqlite
+PERPDEX_COLLECTION_INTERVAL=30
+PERPDEX_ORDERBOOK_DEPTH=100
+PERPDEX_MAX_NOTIONAL_DEPTH=1000000
+PERPDEX_PUBLIC_API_TIMEOUT=20
+PERPDEX_PUBLIC_API_RETRIES=3
+PERPDEX_COLLECTOR_LOG_PATH=data/logs/collector.log
+```
+
+## Verification
+
+Run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1
+```
+
+If `pytest` exists, this runs the full test suite. If `pytest` is missing, it runs fallback checks: syntax compile, SQLite init/seed, overview, storage, and secret scan.
+
+## Current Policy Decisions
+
+- Keep SQLite as the default local database for Phase 1.
+- Keep repository functions as the storage boundary so PostgreSQL or TimescaleDB can be added later.
+- For live test collection, prefer `--interval 30 --depth 100 --max-notional-depth 1000000` to test 30-second polling with about `$1M` stored depth per side.
+- For later conservative server collection, prefer `--interval 300 --depth 100 --max-notional-depth 1000000` unless measured DB growth is too high.
+- `--depth` controls how many levels to request when an exchange supports a limit; `--max-notional-depth` trims saved bid/ask levels by cumulative USD notional per side.
+- Do not migrate old `data/`, SQLite files, or logs.
+- Treat Hibachi `EUR-PERP` null orderbook responses as temporary public API gaps: do not save fake snapshots; record collector failure and retry later.
+- Use Hotstuff REST `/info` public methods for the current collector. Keep WebSocket for a future streaming task.
+- Use Hyperliquid direct REST `/info` public methods. Do not add SDK, CCXT, wallet, signing, or exchange endpoint features unless scope changes.
+- Hyperliquid maps `SAMSUNG-PERP` to `xyz:SMSN`, `SKHYNICS-PERP` to `xyz:SKHX`, and `WTIOIL-PERP` to `cash:WTI`.
+- Use Lighter direct REST public endpoints under `https://mainnet.zklighter.elliot.ai/api/v1`. Do not add the SDK unless a future task needs SDK-only public data.
+- Lighter maps `SAMSUNG-PERP` to active `SAMSUNGUSD`, `SKHYNICS-PERP` to active `SKHYNIXUSD`, and `BRENT-PERP` to active `BRENTOIL`.
+- Use Pacifica direct REST public endpoints under `https://api.pacifica.fi/api/v1`. Do not add the SDK unless a future task needs SDK-only public data.
+- Pacifica maps `GOLD-PERP` to `XAU`, `SILVER-PERP` to `XAG`, and keeps `CL-PERP`, `SKHYNIX-PERP`, and `SAMSUNG-PERP` as direct symbols.

@@ -3,7 +3,17 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 
-from perpdex_bot.config import DEFAULT_LIVE_MARKETS, load_market_config
+from perpdex_bot.config import (
+    DEFAULT_DB_PATH,
+    DEFAULT_LIVE_MARKETS,
+    collection_interval_seconds,
+    default_db_path,
+    load_env_file,
+    load_market_config,
+    orderbook_depth_limit,
+    orderbook_max_notional_depth,
+    public_api_timeout_seconds,
+)
 from perpdex_bot.dashboard import render_average_spreads, render_collector_status, render_snapshot
 from perpdex_bot.db import AsyncSQLite
 from perpdex_bot.models import AverageSpread, BookSide, MarketSnapshot, OrderBookLevel
@@ -19,7 +29,7 @@ def test_market_config_loads_hibachi_symbols(tmp_path) -> None:
             {
               "exchange": "Hibachi",
               "enabled": true,
-              "symbols": ["btc-perp", "ETH-PERP", "EUR-PERP"]
+              "symbols": ["btc-perp", "ETH-PERP", "EUR-PERP", "SOL-PERP", "HYPE-PERP"]
             }
           ]
         }
@@ -31,7 +41,7 @@ def test_market_config_loads_hibachi_symbols(tmp_path) -> None:
 
     assert len(configs) == 1
     assert configs[0].exchange_id == "Hibachi"
-    assert configs[0].symbols == ("BTC-PERP", "ETH-PERP", "EUR-PERP")
+    assert configs[0].symbols == ("BTC-PERP", "ETH-PERP", "EUR-PERP", "SOL-PERP", "HYPE-PERP")
 
 
 def test_market_config_loads_multiple_exchanges(tmp_path) -> None:
@@ -41,7 +51,7 @@ def test_market_config_loads_multiple_exchanges(tmp_path) -> None:
         {
           "markets": [
             {"exchange": "Hibachi", "enabled": true, "symbols": ["BTC-PERP"]},
-            {"exchange": "Rise", "enabled": true, "symbols": ["btc-perp"]}
+            {"exchange": "Rise", "enabled": true, "symbols": ["btc-perp", "eth-perp", "hype-perp", "sol-perp"]}
           ]
         }
         """,
@@ -52,7 +62,7 @@ def test_market_config_loads_multiple_exchanges(tmp_path) -> None:
 
     assert [(item.exchange_id, item.symbols) for item in configs] == [
         ("Hibachi", ("BTC-PERP",)),
-        ("Rise", ("BTC-PERP",)),
+        ("Rise", ("BTC-PERP", "ETH-PERP", "HYPE-PERP", "SOL-PERP")),
     ]
 
 
@@ -61,6 +71,49 @@ def test_market_config_defaults_when_file_is_missing(tmp_path) -> None:
 
     assert configs[0].exchange_id == "Hibachi"
     assert configs[0].symbols == DEFAULT_LIVE_MARKETS
+
+
+def test_default_db_path_uses_env_var(monkeypatch, tmp_path) -> None:
+    custom_path = tmp_path / "local.sqlite"
+    monkeypatch.setenv("PERPDEX_DB_PATH", str(custom_path))
+
+    assert default_db_path() == custom_path
+
+
+def test_default_db_path_falls_back_to_repo_data(monkeypatch) -> None:
+    monkeypatch.delenv("PERPDEX_DB_PATH", raising=False)
+
+    assert default_db_path() == DEFAULT_DB_PATH
+
+
+def test_env_file_loads_operational_settings_without_overriding_existing_env(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        """
+        PERPDEX_DB_PATH=data/from-env.sqlite
+        PERPDEX_COLLECTION_INTERVAL=30
+        PERPDEX_ORDERBOOK_DEPTH=100
+        PERPDEX_MAX_NOTIONAL_DEPTH=1000000
+        PERPDEX_PUBLIC_API_TIMEOUT=20
+        """,
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("PERPDEX_COLLECTION_INTERVAL", raising=False)
+    monkeypatch.delenv("PERPDEX_ORDERBOOK_DEPTH", raising=False)
+    monkeypatch.delenv("PERPDEX_MAX_NOTIONAL_DEPTH", raising=False)
+    monkeypatch.delenv("PERPDEX_PUBLIC_API_TIMEOUT", raising=False)
+    monkeypatch.setenv("PERPDEX_DB_PATH", "data/already-set.sqlite")
+
+    load_env_file(env_path)
+
+    assert default_db_path() == DEFAULT_DB_PATH.parent / "already-set.sqlite"
+    assert collection_interval_seconds() == 30
+    assert orderbook_depth_limit() == 100
+    assert orderbook_max_notional_depth() == 1_000_000
+    assert public_api_timeout_seconds() == 20
 
 
 def test_collector_status_tracks_success_and_failures(tmp_path) -> None:

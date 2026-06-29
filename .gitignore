@@ -1,4 +1,5 @@
 __pycache__/
+.verify-pycache/
 .venv/
 .env
 .env.*

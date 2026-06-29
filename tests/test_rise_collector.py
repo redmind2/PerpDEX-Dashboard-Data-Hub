@@ -23,6 +23,18 @@ class FakeRiseClient:
                         "index_price": "100020",
                         "current_funding_rate": "0.00008",
                         "next_funding_time": "1720028800000000000",
+                    },
+                    {
+                        "market_id": "2",
+                        "symbol": "ETH/USDC",
+                    },
+                    {
+                        "market_id": "4",
+                        "symbol": "SOL/USDC",
+                    },
+                    {
+                        "market_id": "15",
+                        "symbol": "HYPE/USDC",
                     }
                 ]
             }
@@ -54,6 +66,28 @@ def test_rise_market_lookup_keeps_internal_btc_perp() -> None:
     assert market is not None
     assert market.market_id == 1
     assert market.display_name == "BTC/USDC"
+
+
+def test_rise_market_lookup_maps_added_public_markets() -> None:
+    payload = {
+        "data": [
+            {"market_id": "2", "symbol": "ETH/USDC"},
+            {"market_id": "4", "symbol": "SOL/USDC"},
+            {"market_id": "15", "symbol": "HYPE/USDC"},
+        ]
+    }
+
+    expected = {
+        "ETH-PERP": (2, "ETH/USDC"),
+        "SOL-PERP": (4, "SOL/USDC"),
+        "HYPE-PERP": (15, "HYPE/USDC"),
+    }
+
+    for symbol, (market_id, display_name) in expected.items():
+        market = find_rise_market(payload, symbol)
+        assert market is not None
+        assert market.market_id == market_id
+        assert market.display_name == display_name
 
 
 def test_rise_collector_builds_phase1_models() -> None:

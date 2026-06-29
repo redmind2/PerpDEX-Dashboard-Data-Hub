@@ -8,16 +8,15 @@ This repo is public data only. It must not contain wallet connection, private ke
 
 - Active repo: `C:\Users\USER\Documents\PerpDEX-Dashboard-Data-Hub`
 - Obsidian HQ: `C:\Users\USER\Desktop\Pagu's Works\06-Coding\PerpDEX Dashboard Data Hub`
-- Previous reference repo: `C:\Users\USER\Documents\PerpDEX 파밍봇`
 
-The old repo was used only as a code reference. The old SQLite DB and logs were not migrated.
+The previous repo was used only as a code reference during migration. The old SQLite DB and logs were not migrated.
 
 ## What Was Migrated
 
 - `src/perpdex_bot/`: application code for public collectors, SQLite storage, calculations, and CLI views
 - `config/markets.json`: enabled public exchanges and symbols
 - `tests/`: automated checks for calculations, collectors, and overview/status output
-- `scripts/`: PM2 config and secret scanner
+- `scripts/`: PM2 config, local verification, and secret scanner
 - `docs/storage-strategy.md`: SQLite retention and future database scaling notes
 - `perpdex.cmd`: Windows helper so commands are shorter
 - `.env.example`: local DB path template without secrets
@@ -55,6 +54,12 @@ $py = "C:\Users\USER\.cache\codex-runtimes\codex-primary-runtime\dependencies\py
 & $py -m pip install -e .
 ```
 
+Run the local verification script:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1
+```
+
 Create a fresh local SQLite DB:
 
 ```powershell
@@ -74,21 +79,69 @@ One-time public collector smoke tests:
 ```powershell
 .\perpdex.cmd collect-live --exchange Hibachi --once
 .\perpdex.cmd collect-live --exchange Rise --once
+.\perpdex.cmd collect-live --exchange Hotstuff --once
+.\perpdex.cmd collect-live --exchange Hyperliquid --once
+.\perpdex.cmd collect-live --exchange Lighter --once
+.\perpdex.cmd collect-live --exchange Pacifica --once
 .\perpdex.cmd status
 .\perpdex.cmd overview
 ```
 
 Do not start long-running collection on this local computer unless you decide to resume local DB accumulation.
 
+## Local SQLite Path
+
+By default, the CLI uses:
+
+```text
+data/perpdex_phase1.sqlite
+```
+
+To use a different local DB for one PowerShell session:
+
+```powershell
+$env:PERPDEX_DB_PATH = "data\my-local.sqlite"
+.\perpdex.cmd init-db
+```
+
+You can also pass `--db` directly. Put it before the command name because it is a global option:
+
+```powershell
+.\perpdex.cmd --db data\my-local.sqlite init-db
+```
+
+## Local Runtime Settings
+
+Use `config/markets.json` for exchange and market selection:
+
+- Set an exchange `enabled` value to `false` to disable the whole exchange.
+- Remove a symbol from `symbols` to disable one market.
+
+Use `.env` for machine-specific runtime settings. Copy `.env.example` to `.env` and edit local values:
+
+```env
+PERPDEX_DB_PATH=data/live-30s-test.sqlite
+PERPDEX_COLLECTION_INTERVAL=30
+PERPDEX_ORDERBOOK_DEPTH=100
+PERPDEX_MAX_NOTIONAL_DEPTH=1000000
+PERPDEX_PUBLIC_API_TIMEOUT=20
+PERPDEX_PUBLIC_API_RETRIES=3
+PERPDEX_COLLECTOR_LOG_PATH=data/logs/collector.log
+```
+
+Do not put API keys, private keys, wallet secrets, session keys, or trading credentials in `.env`.
+
 ## Useful Commands
 
 ```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1
 .\perpdex.cmd init-db
 .\perpdex.cmd seed-mock
 .\perpdex.cmd overview
 .\perpdex.cmd overview --failed-only
 .\perpdex.cmd status
 .\perpdex.cmd status --failed-only
+.\perpdex.cmd collect-live --exchange Pacifica --interval 300 --depth 100 --max-notional-depth 1000000
 .\perpdex.cmd dashboard --exchange Hibachi --symbol BTC-PERP
 .\perpdex.cmd funding-history --exchange Hibachi --symbol BTC-PERP --limit 12
 .\perpdex.cmd slippage --exchange Hibachi --symbol BTC-PERP
@@ -98,8 +151,68 @@ Do not start long-running collection on this local computer unless you decide to
 
 ## Current Public Collectors
 
-- Hibachi: `BTC-PERP`, `ETH-PERP`, `EUR-PERP`
-- Rise: `BTC-PERP`, mapped to public BTC/USDC market data with `market_id` 1
+- Hibachi: `BTC-PERP`, `ETH-PERP`, `EUR-PERP`, `SOL-PERP`, `HYPE-PERP`
+- Rise: `BTC-PERP`, `ETH-PERP`, `HYPE-PERP`, `SOL-PERP`
+- Hotstuff: `BTC-PERP`, `ETH-PERP`, `HYPE-PERP`, `SOL-PERP`, `SILVER-PERP`, `WTIOIL-PERP`, `GOLD-PERP`, `BRENTOIL-PERP`
+- Hyperliquid: `BTC-PERP`, `ETH-PERP`, `SOL-PERP`, `HYPE-PERP`, `SAMSUNG-PERP`, `SKHYNICS-PERP`, `EWY-PERP`, `WTIOIL-PERP`, `BRENTOIL-PERP`, `GOLD-PERP`, `SILVER-PERP`
+- Lighter: `BTC-PERP`, `ETH-PERP`, `SOL-PERP`, `HYPE-PERP`, `SAMSUNG-PERP`, `SKHYNICS-PERP`, `EWY-PERP`, `WTI-PERP`, `BRENT-PERP`, `XAU-PERP`, `PAXG-PERP`, `XAG-PERP`
+- Pacifica: `BTC-PERP`, `ETH-PERP`, `SOL-PERP`, `HYPE-PERP`, `GOLD-PERP`, `PAXG-PERP`, `CL-PERP`, `SILVER-PERP`, `SKHYNIX-PERP`, `SAMSUNG-PERP`
+
+Older notes may call Rise `RiseX`, but the CLI exchange id is `Rise`.
+
+## Orderbook Storage Depth
+
+`collect-live` supports two orderbook depth controls:
+
+- `--depth`: max levels to request from the exchange when the exchange supports a limit.
+- `--max-notional-depth`: max USD notional to save per side after collection.
+
+Example: collect every 5 minutes and save about `$1M` bid depth plus `$1M` ask depth per market:
+
+```powershell
+.\perpdex.cmd collect-live --exchange Pacifica --interval 300 --depth 100 --max-notional-depth 1000000
+```
+
+When `--max-notional-depth 1000000` is set, the collector keeps levels until cumulative level notional reaches at least `$1,000,000` on bids and at least `$1,000,000` on asks. If the first level alone is larger than the target, it still keeps that first level.
+
+Hotstuff uses REST for this collector. The WebSocket API is better for continuous streaming later, but REST is simpler and more reliable for the current 60-second SQLite collection loop.
+
+Hyperliquid also uses direct REST `/info` public endpoints. The Python SDK and CCXT are useful for broader integrations, but they add dependencies and include trading/account surfaces that this public data hub does not need.
+
+Lighter uses direct REST public endpoints under `https://mainnet.zklighter.elliot.ai/api/v1`. The Python SDK is useful for broader integrations, but REST is enough for this public collector and avoids adding signer/trading-account surfaces.
+
+Pacifica uses direct REST public endpoints under `https://api.pacifica.fi/api/v1`. The Python SDK is useful for broader integrations, but the REST API already exposes public market info, prices, funding, and order books for the current collector.
+
+Hyperliquid non-core market mappings:
+
+- `SAMSUNG-PERP` -> `xyz:SMSN`
+- `SKHYNICS-PERP` -> `xyz:SKHX`
+- `WTIOIL-PERP` -> `cash:WTI`
+- `BRENTOIL-PERP` -> `xyz:BRENTOIL`
+- `GOLD-PERP` -> `xyz:GOLD`
+- `SILVER-PERP` -> `xyz:SILVER`
+
+Lighter market mappings:
+
+- `SAMSUNG-PERP` -> `SAMSUNGUSD`
+- `SKHYNICS-PERP` -> `SKHYNIXUSD`
+- `BRENT-PERP` -> `BRENTOIL`
+- `XAU-PERP` -> `XAU`
+- `XAG-PERP` -> `XAG`
+
+Pacifica market mappings:
+
+- `GOLD-PERP` -> `XAU`
+- `SILVER-PERP` -> `XAG`
+- `CL-PERP` -> `CL`
+- `SKHYNIX-PERP` -> `SKHYNIX`
+- `SAMSUNG-PERP` -> `SAMSUNG`
+
+## Hibachi EUR-PERP Orderbook Policy
+
+If Hibachi returns a null or empty orderbook for `EUR-PERP`, the collector must not save a fake market snapshot. It records a collector failure, leaves the market visible in `status` / `overview`, and retries on the next collection pass.
+
+This is safer than filling missing bids or asks with zeroes because fake orderbook rows would make spread and slippage numbers misleading.
 
 ## Future Database Direction
 

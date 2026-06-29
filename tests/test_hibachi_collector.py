@@ -54,6 +54,8 @@ class FakeHibachiClient:
 def test_symbol_mapping() -> None:
     assert to_hibachi_symbol("BTC-PERP") == "BTC/USDT-P"
     assert to_hibachi_symbol("EUR-PERP") == "EUR/USDT-P"
+    assert to_hibachi_symbol("SOL-PERP") == "SOL/USDT-P"
+    assert to_hibachi_symbol("HYPE-PERP") == "HYPE/USDT-P"
 
 
 def test_eur_uses_smaller_orderbook_granularity() -> None:

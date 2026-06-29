@@ -57,6 +57,7 @@ Phase 1:
 
 - SQLite local file.
 - Mock and early public market data.
+- `PERPDEX_DB_PATH` can point each local run at a different SQLite file.
 
 Phase 2:
 
@@ -82,3 +83,30 @@ For long-running production:
 - Funding rates: 1 year or longer.
 - Archived raw orderbook: optional, compressed, outside primary DB.
 
+## PostgreSQL / TimescaleDB Extension Shape
+
+The code should keep this boundary:
+
+```text
+collector modules
+  -> MarketDataRepository methods
+    -> SQLite adapter now
+    -> PostgreSQL or TimescaleDB adapter later
+```
+
+Minimum practical upgrade path:
+
+1. Keep the existing model classes and repository method names.
+2. Add a storage adapter interface only when a second backend is actually implemented.
+3. Move SQL that is specific to SQLite into the SQLite adapter.
+4. Add a PostgreSQL or TimescaleDB adapter with the same repository behavior.
+5. Keep collectors unaware of the database backend.
+
+Likely TimescaleDB hypertables later:
+
+- `market_snapshots` partitioned by `timestamp`
+- `funding_rates` partitioned by `timestamp`
+- optional `orderbook_levels` partitioned through snapshot time or stored as short-retention hot data
+- summary tables for spread, depth, and slippage windows
+
+Do not add account, wallet, position, order, or execution tables to this public data hub unless the project scope is explicitly changed.
