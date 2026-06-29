@@ -159,11 +159,12 @@ class MarketDataRepository:
                 params,
             )
             samples = int(row["samples"] or 0) if row is not None else 0
+            has_average = samples >= 2
             results.append(
                 AverageSpread(
                     window=label,
-                    avg_spread=None if samples == 0 else float(row["avg_spread"]),
-                    avg_spread_bps=None if samples == 0 else float(row["avg_spread_bps"]),
+                    avg_spread=None if not has_average else float(row["avg_spread"]),
+                    avg_spread_bps=None if not has_average else float(row["avg_spread_bps"]),
                     samples=samples,
                 )
             )

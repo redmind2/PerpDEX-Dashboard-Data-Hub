@@ -3,9 +3,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from .archive import archive_month
 from .config import (
     DEFAULT_COLLECTOR_LOG_PATH,
     DEFAULT_MARKET_CONFIG_PATH,
@@ -103,6 +104,14 @@ def build_parser() -> argparse.ArgumentParser:
     prune = sub.add_parser("prune", help="Delete market/orderbook data older than retention")
     prune.add_argument("--days", type=int, default=MARKET_RETENTION_DAYS)
 
+    archive = sub.add_parser("archive-month", help="Compress and remove one old calendar month from local SQLite")
+    archive.add_argument("--month", default=None, help="Explicit month to archive in YYYY-MM format")
+    archive.add_argument("--now", default=None, help="Testing clock date in YYYY-MM-DD format")
+    archive.add_argument("--archive-dir", type=Path, default=Path("data/archives"))
+    archive.add_argument("--keep-sqlite", action="store_true", help="Keep the uncompressed archive SQLite beside the zip")
+    archive.add_argument("--force", action="store_true", help="Replace an existing archive for the same month")
+    archive.add_argument("--skip-vacuum", action="store_true", help="Skip vacuuming the active SQLite DB after deletion")
+
     sub.add_parser("storage", help="Show DB row counts and retention policy")
 
     collector_status = sub.add_parser("collector-status", help="Show public collector health by market")
@@ -136,6 +145,26 @@ def _add_optional_market_filters(parser: argparse.ArgumentParser) -> None:
 
 
 async def run(args: argparse.Namespace) -> None:
+    if args.command == "archive-month":
+        result = archive_month(
+            args.db,
+            archive_dir=args.archive_dir,
+            month=args.month,
+            now=_parse_archive_now(args.now),
+            keep_sqlite=args.keep_sqlite,
+            force=args.force,
+            vacuum_source=not args.skip_vacuum,
+        )
+        if not result.created:
+            print(f"No rows to archive for {result.year_month}.")
+            return
+        print(f"Archived {result.year_month} to {result.archive_zip_path}")
+        print(f"- market snapshots: {result.snapshot_rows:,}")
+        print(f"- orderbook levels: {result.orderbook_rows:,}")
+        print(f"- funding rates: {result.funding_rows:,}")
+        print(f"- vacuumed active DB: {'yes' if result.vacuumed_source else 'no'}")
+        return
+
     async with AsyncSQLite(args.db) as db:
         await db.initialize()
         repo = MarketDataRepository(db)
@@ -371,6 +400,12 @@ def _positive_float(value: str) -> float:
     if parsed <= 0:
         raise argparse.ArgumentTypeError("must be greater than 0")
     return parsed
+
+
+def _parse_archive_now(value: str | None) -> date | None:
+    if value is None:
+        return None
+    return date.fromisoformat(value)
 
 
 def _configure_collector_logging(path: Path) -> None:

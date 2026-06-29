@@ -219,3 +219,38 @@ def test_small_market_values_show_four_decimals() -> None:
     assert "$1.1405" in rendered_snapshot
     assert "$0.0000" in rendered_spreads
     assert "0.09 bps" in rendered_spreads
+
+
+def test_average_spread_requires_two_samples_for_window(tmp_path) -> None:
+    async def scenario() -> None:
+        async with AsyncSQLite(tmp_path / "spreads.sqlite") as db:
+            await db.initialize()
+            repo = MarketDataRepository(db)
+            now = datetime(2026, 6, 23, 12, 0, tzinfo=timezone.utc)
+            older = now - timedelta(minutes=4)
+            for timestamp in (older, now):
+                await repo.save_snapshot(
+                    MarketSnapshot(
+                        exchange_id="Hibachi",
+                        symbol="BTC-PERP",
+                        timestamp=timestamp,
+                        mark_price=100.0,
+                        index_price=100.0,
+                        best_bid=99.0,
+                        best_ask=101.0,
+                        bids=(OrderBookLevel(BookSide.BID, price=99.0, size=1.0, level_index=0),),
+                        asks=(OrderBookLevel(BookSide.ASK, price=101.0, size=1.0, level_index=0),),
+                    )
+                )
+
+            averages = await repo.average_spreads("Hibachi", "BTC-PERP", now=now)
+
+        one_min = next(item for item in averages if item.window == "1m")
+        five_min = next(item for item in averages if item.window == "5m")
+        assert one_min.samples == 1
+        assert one_min.avg_spread is None
+        assert one_min.avg_spread_bps is None
+        assert five_min.samples == 2
+        assert five_min.avg_spread == 2.0
+
+    asyncio.run(scenario())

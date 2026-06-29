@@ -66,8 +66,8 @@ Or pass `--db` before the command name:
 Suggested live-test `.env`:
 
 ```env
-PERPDEX_DB_PATH=data/live-30s-test.sqlite
-PERPDEX_COLLECTION_INTERVAL=30
+PERPDEX_DB_PATH=data/live-5m-test.sqlite
+PERPDEX_COLLECTION_INTERVAL=300
 PERPDEX_ORDERBOOK_DEPTH=100
 PERPDEX_MAX_NOTIONAL_DEPTH=1000000
 PERPDEX_PUBLIC_API_TIMEOUT=20
