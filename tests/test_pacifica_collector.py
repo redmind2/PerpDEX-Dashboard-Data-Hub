@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import asyncio
 
-from perpdex_bot.pacifica import PacificaPublicCollector, to_pacifica_market
+from perpdex_bot.pacifica import (
+    DEFAULT_PACIFICA_ORDERBOOK_AGG_LEVEL,
+    PacificaPublicCollector,
+    pacifica_orderbook_agg_level,
+    to_pacifica_market,
+)
 
 
 class FakePacificaClient:
@@ -29,9 +34,10 @@ class FakePacificaClient:
             "funding": "0.0000125",
         }
 
-    async def order_book(self, api_symbol: str):
-        self.requests.append(("order_book", api_symbol))
+    async def order_book(self, api_symbol: str, agg_level: int | None = None):
+        self.requests.append(("order_book", f"{api_symbol}:{agg_level}"))
         assert api_symbol == "XAU"
+        assert agg_level == DEFAULT_PACIFICA_ORDERBOOK_AGG_LEVEL
         return {
             "s": "XAU",
             "t": 1_782_718_609_369,
@@ -77,5 +83,11 @@ def test_pacifica_collector_builds_phase1_models() -> None:
     assert client.requests == [
         ("market_info", "XAU"),
         ("price_info", "XAU"),
-        ("order_book", "XAU"),
+        ("order_book", "XAU:100"),
     ]
+
+
+def test_pacifica_orderbook_agg_level_can_be_configured(monkeypatch) -> None:
+    monkeypatch.setenv("PERPDEX_PACIFICA_ORDERBOOK_AGG_LEVEL", "1000")
+
+    assert pacifica_orderbook_agg_level() == 1000

@@ -8,6 +8,7 @@ New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
 $runnerLog = Join-Path $logDir "live-test-runner.log"
 $pidPath = Join-Path $repoRoot "data\live-test.pid"
+$controlPath = Join-Path $repoRoot "data\control.json"
 $PID | Set-Content -Path $pidPath -Encoding ASCII
 
 function Get-EnvValue {
@@ -51,6 +52,46 @@ function Write-RunnerLog {
     "$timestamp $Message" | Tee-Object -FilePath $runnerLog -Append
 }
 
+function Get-ControlState {
+    if (-not (Test-Path $controlPath)) {
+        return [PSCustomObject]@{
+            collector_paused = $false
+            paused_exchanges = @()
+        }
+    }
+
+    try {
+        $state = Get-Content -Path $controlPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($null -eq $state.paused_exchanges) {
+            $state | Add-Member -NotePropertyName paused_exchanges -NotePropertyValue @() -Force
+        }
+        if ($null -eq $state.collector_paused) {
+            $state | Add-Member -NotePropertyName collector_paused -NotePropertyValue $false -Force
+        }
+        return $state
+    } catch {
+        Write-RunnerLog "Control file read failed; continuing collection. error=$($_.Exception.Message)"
+        return [PSCustomObject]@{
+            collector_paused = $false
+            paused_exchanges = @()
+        }
+    }
+}
+
+function Test-ExchangePaused {
+    param(
+        [object]$ControlState,
+        [string]$Exchange
+    )
+
+    foreach ($pausedExchange in @($ControlState.paused_exchanges)) {
+        if ([string]::Equals([string]$pausedExchange, $Exchange, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+    return $false
+}
+
 $intervalSeconds = Get-EnvInt -Key "PERPDEX_COLLECTION_INTERVAL" -DefaultValue 300
 $exchanges = @("Hibachi", "Rise", "Hotstuff", "Hyperliquid", "Lighter", "Pacifica")
 
@@ -62,7 +103,24 @@ Write-RunnerLog "Using .env runtime defaults for DB path, interval, depth, notio
 while ($true) {
     Write-RunnerLog "Collection pass started."
 
+    $control = Get-ControlState
+    if ($control.collector_paused) {
+        Write-RunnerLog "Collection pass skipped: collector paused by control file."
+        Write-RunnerLog "Sleeping $intervalSeconds seconds."
+        Start-Sleep -Seconds $intervalSeconds
+        continue
+    }
+
     foreach ($exchange in $exchanges) {
+        $control = Get-ControlState
+        if ($control.collector_paused) {
+            Write-RunnerLog "Collection pass paused before $exchange."
+            break
+        }
+        if (Test-ExchangePaused -ControlState $control -Exchange $exchange) {
+            Write-RunnerLog "Skipping ${exchange}: exchange paused by control file."
+            continue
+        }
         Write-RunnerLog "Collecting $exchange"
         .\perpdex.cmd collect-live --exchange $exchange --once 2>&1 |
             Tee-Object -FilePath $runnerLog -Append

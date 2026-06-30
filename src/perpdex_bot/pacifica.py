@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -15,6 +16,9 @@ from .models import BookSide, FundingRate, MarketSnapshot, OrderBookLevel
 
 
 PACIFICA_API_BASE_URL = "https://api.pacifica.fi/api/v1"
+PACIFICA_ORDERBOOK_AGG_LEVEL_ENV_VAR = "PERPDEX_PACIFICA_ORDERBOOK_AGG_LEVEL"
+DEFAULT_PACIFICA_ORDERBOOK_AGG_LEVEL = 100
+PACIFICA_ORDERBOOK_AGG_LEVELS = {1, 10, 100, 1000, 10000}
 
 
 @dataclass(frozen=True)
@@ -60,8 +64,11 @@ class PacificaPublicClient:
         prices = await self._price_infos()
         return prices.get(api_symbol.upper())
 
-    async def order_book(self, api_symbol: str) -> dict[str, Any]:
-        payload = await self.get_json("book", {"symbol": api_symbol})
+    async def order_book(self, api_symbol: str, agg_level: int | None = None) -> dict[str, Any]:
+        params: dict[str, object] = {"symbol": api_symbol}
+        if agg_level is not None:
+            params["agg_level"] = agg_level
+        payload = await self.get_json("book", params)
         if not isinstance(payload, dict):
             raise ValueError("Pacifica book response was not a JSON object")
         data = payload.get("data")
@@ -141,15 +148,24 @@ class PacificaPublicClient:
 class PacificaPublicCollector(LivePublicCollector):
     exchange_id = "Pacifica"
 
-    def __init__(self, client: PacificaPublicClient | None = None) -> None:
+    def __init__(
+        self,
+        client: PacificaPublicClient | None = None,
+        orderbook_agg_level: int | None = None,
+    ) -> None:
         self.client = client or PacificaPublicClient()
+        self.orderbook_agg_level = (
+            pacifica_orderbook_agg_level()
+            if orderbook_agg_level is None
+            else _validate_agg_level(orderbook_agg_level)
+        )
 
     async def collect_once(self, symbol: str) -> CollectorResult:
         market = to_pacifica_market(symbol)
         market_info, price_info, book = await asyncio.gather(
             self.client.market_info(market.api_symbol),
             self.client.price_info(market.api_symbol),
-            self.client.order_book(market.api_symbol),
+            self.client.order_book(market.api_symbol, agg_level=self.orderbook_agg_level),
         )
         if market_info is None:
             raise ValueError(f"Pacifica market info was not found for {symbol}")
@@ -174,6 +190,20 @@ def to_pacifica_market(symbol: str) -> PacificaMarket:
     if market is None:
         raise ValueError(f"Unsupported Pacifica public market: {symbol}")
     return market
+
+
+def pacifica_orderbook_agg_level() -> int:
+    raw = os.environ.get(PACIFICA_ORDERBOOK_AGG_LEVEL_ENV_VAR, "").strip()
+    if not raw:
+        return DEFAULT_PACIFICA_ORDERBOOK_AGG_LEVEL
+    return _validate_agg_level(int(raw))
+
+
+def _validate_agg_level(value: int) -> int:
+    if value not in PACIFICA_ORDERBOOK_AGG_LEVELS:
+        allowed = ", ".join(str(level) for level in sorted(PACIFICA_ORDERBOOK_AGG_LEVELS))
+        raise ValueError(f"Pacifica orderbook agg_level must be one of {allowed}")
+    return value
 
 
 def snapshot_from_pacifica_payload(

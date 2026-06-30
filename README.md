@@ -168,6 +168,7 @@ PERPDEX_TELEGRAM_BOT_TOKEN=
 PERPDEX_TELEGRAM_CHAT_ID=
 PERPDEX_TELEGRAM_STATUS_INTERVAL=21600
 PERPDEX_TELEGRAM_CHECK_INTERVAL=60
+PERPDEX_TELEGRAM_COMMAND_INTERVAL=2
 PERPDEX_TELEGRAM_STALE_AFTER=900
 PERPDEX_LIVE_PID_PATH=data/live-test.pid
 PERPDEX_LIVE_RUNNER_LOG_PATH=data/logs/live-test-runner.log
@@ -181,6 +182,11 @@ Telegram commands:
 /storage - show DB size and row counts
 /markets - show monitored exchanges and markets
 /failures - show active collector failures
+/control - show current pause controls
+/pause - pause all collection
+/resume - resume all collection and clear exchange pauses
+/pause Pacifica - pause one exchange
+/resume Pacifica - resume one exchange
 /slippage BTC - show simple slippage rows across exchanges
 /slippage Hibachi BTC - show simple slippage for one market
 /orderspread - show $100k order-size spread rows for every market
@@ -249,7 +255,7 @@ Hyperliquid also uses direct REST `/info` public endpoints. The Python SDK and C
 
 Lighter uses direct REST public endpoints under `https://mainnet.zklighter.elliot.ai/api/v1`. The Python SDK is useful for broader integrations, but REST is enough for this public collector and avoids adding signer/trading-account surfaces.
 
-Pacifica uses direct REST public endpoints under `https://api.pacifica.fi/api/v1`. The Python SDK is useful for broader integrations, but the REST API already exposes public market info, prices, funding, and order books for the current collector.
+Pacifica uses direct REST public endpoints under `https://api.pacifica.fi/api/v1`. The Python SDK is useful for broader integrations, but the REST API already exposes public market info, prices, funding, and order books for the current collector. Pacifica's public REST book returns up to 10 levels per side; the collector requests `agg_level=100` by default through `PERPDEX_PACIFICA_ORDERBOOK_AGG_LEVEL` so order-size spread estimates use a wider aggregated book. Supported values are `1`, `10`, `100`, `1000`, and `10000`.
 
 Hyperliquid non-core market mappings:
 
@@ -293,6 +299,12 @@ On the first day of each month, archive the month from two months earlier:
 ```
 
 Example: on July 1, this archives May data into `data/archives/perpdex_YYYY-MM.sqlite.zip`, deletes those May raw rows from the active DB, and vacuums the active DB so the file can shrink. For a calendar test or manual test, pass `--now 2026-07-01` or archive a specific month with `--month 2026-05`.
+
+For server automation, `scripts/archive-monthly.ps1` runs the same archive command and writes `data/logs/archive-monthly.log`. Register it in Windows Task Scheduler to run monthly:
+
+```powershell
+schtasks.exe /Create /TN "PerpDEX Monthly Archive" /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\Users\redmi\Documents\PerpDEX-Dashboard-Data-Hub\scripts\archive-monthly.ps1" /SC MONTHLY /D 1 /ST 03:30 /F
+```
 
 ## Future Database Direction
 

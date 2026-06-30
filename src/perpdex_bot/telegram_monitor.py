@@ -21,6 +21,15 @@ from .config import (
     collector_log_path,
     load_market_config,
 )
+from .control import (
+    DEFAULT_CONTROL_PATH,
+    format_control,
+    pause_all,
+    pause_exchange,
+    read_control,
+    resume_all,
+    resume_exchange,
+)
 from .models import BookSide, OrderBookLevel, OrderSpreadEstimate, SlippageEstimate, from_iso
 
 
@@ -28,12 +37,15 @@ TELEGRAM_TOKEN_ENV_VAR = "PERPDEX_TELEGRAM_BOT_TOKEN"
 TELEGRAM_CHAT_ID_ENV_VAR = "PERPDEX_TELEGRAM_CHAT_ID"
 TELEGRAM_STATUS_INTERVAL_ENV_VAR = "PERPDEX_TELEGRAM_STATUS_INTERVAL"
 TELEGRAM_CHECK_INTERVAL_ENV_VAR = "PERPDEX_TELEGRAM_CHECK_INTERVAL"
+TELEGRAM_COMMAND_INTERVAL_ENV_VAR = "PERPDEX_TELEGRAM_COMMAND_INTERVAL"
 TELEGRAM_STALE_AFTER_ENV_VAR = "PERPDEX_TELEGRAM_STALE_AFTER"
 TELEGRAM_RUNNER_LOG_ENV_VAR = "PERPDEX_LIVE_RUNNER_LOG_PATH"
 TELEGRAM_PID_PATH_ENV_VAR = "PERPDEX_LIVE_PID_PATH"
+CONTROL_PATH_ENV_VAR = "PERPDEX_CONTROL_PATH"
 
 DEFAULT_STATUS_INTERVAL_SECONDS = 6 * 60 * 60
 DEFAULT_CHECK_INTERVAL_SECONDS = 60
+DEFAULT_COMMAND_INTERVAL_SECONDS = 2
 DEFAULT_STALE_AFTER_SECONDS = 15 * 60
 DEFAULT_RUNNER_LOG_PATH = Path("data/logs/live-test-runner.log")
 DEFAULT_PID_PATH = Path("data/live-test.pid")
@@ -57,10 +69,12 @@ class TelegramMonitorConfig:
     market_config_path: Path = DEFAULT_MARKET_CONFIG_PATH
     status_interval_seconds: int = DEFAULT_STATUS_INTERVAL_SECONDS
     check_interval_seconds: int = DEFAULT_CHECK_INTERVAL_SECONDS
+    command_interval_seconds: int = DEFAULT_COMMAND_INTERVAL_SECONDS
     stale_after_seconds: int = DEFAULT_STALE_AFTER_SECONDS
     pid_path: Path = DEFAULT_PID_PATH
     runner_log_path: Path = DEFAULT_RUNNER_LOG_PATH
     collector_log_path: Path = DEFAULT_COLLECTOR_LOG_PATH
+    control_path: Path = DEFAULT_CONTROL_PATH
     dry_run: bool = False
 
 
@@ -110,10 +124,12 @@ def config_from_args(args: argparse.Namespace) -> TelegramMonitorConfig:
         market_config_path=args.market_config,
         status_interval_seconds=args.status_interval,
         check_interval_seconds=args.check_interval,
+        command_interval_seconds=args.command_interval,
         stale_after_seconds=args.stale_after,
         pid_path=args.pid_path,
         runner_log_path=args.runner_log,
         collector_log_path=args.collector_log,
+        control_path=args.control_path,
         dry_run=args.dry_run,
     )
 
@@ -142,21 +158,33 @@ class TelegramMonitor:
 
     def run_forever(self) -> None:
         next_status_at = 0.0
+        next_health_check_at = 0.0
         while True:
             now = time.monotonic()
-            send_status = now >= next_status_at
-            self.check_once(send_status=send_status)
-            if send_status:
-                next_status_at = now + self.config.status_interval_seconds
-            time.sleep(self.config.check_interval_seconds)
+            self.handle_commands()
+            if now >= next_health_check_at:
+                send_status = now >= next_status_at
+                self.check_once(send_status=send_status, handle_commands=False)
+                next_health_check_at = now + self.config.check_interval_seconds
+                if send_status:
+                    next_status_at = now + self.config.status_interval_seconds
+            time.sleep(self.config.command_interval_seconds)
 
-    def check_once(self, send_status: bool = False) -> None:
+    def check_once(self, send_status: bool = False, handle_commands: bool = True) -> None:
         issues: list[str] = []
         db_status = read_db_status(self.config.db_path)
         process_state = collector_process_state(self.config.pid_path)
-        self.handle_commands(db_status, process_state)
+        if handle_commands:
+            self.handle_commands(db_status, process_state)
+        control_state = read_control(self.config.control_path)
 
-        issues.extend(db_issues(db_status, self.config.stale_after_seconds))
+        issues.extend(
+            db_issues(
+                db_status,
+                self.config.stale_after_seconds,
+                check_staleness=not control_state.collector_paused,
+            )
+        )
         if process_state != "running":
             issues.append(f"collector process is {process_state}")
         issues.extend(log_issues(self.runner_log.read_new_lines(), "runner log"))
@@ -177,7 +205,11 @@ class TelegramMonitor:
         if send_status:
             self._send(format_status_message(db_status, process_state))
 
-    def handle_commands(self, db_status: DBStatus, process_state: str) -> None:
+    def handle_commands(
+        self,
+        db_status: DBStatus | None = None,
+        process_state: str | None = None,
+    ) -> None:
         if self.config.dry_run:
             return
         updates = fetch_telegram_updates(self.config.bot_token, self.telegram_update_offset)
@@ -192,6 +224,10 @@ class TelegramMonitor:
             text = str(message.get("text", "")).strip()
             command = normalize_command(text)
             if command:
+                if db_status is None:
+                    db_status = read_db_status(self.config.db_path)
+                if process_state is None:
+                    process_state = collector_process_state(self.config.pid_path)
                 self._send(
                     command_response(
                         command,
@@ -263,8 +299,14 @@ def _count(conn: sqlite3.Connection, table: str) -> int:
     return int(row["count"] if row else 0)
 
 
-def db_issues(status: DBStatus, stale_after_seconds: int) -> list[str]:
+def db_issues(
+    status: DBStatus,
+    stale_after_seconds: int,
+    check_staleness: bool = True,
+) -> list[str]:
     issues = list(status.active_failures)
+    if not check_staleness:
+        return issues
     if not status.db_path.exists():
         return issues
     if status.latest_snapshot_at is None:
@@ -374,6 +416,10 @@ def command_response(
         return format_markets_message(config.market_config_path)
     if command == "/failures":
         return format_failures_message(status)
+    if command == "/control":
+        return format_control(read_control(config.control_path))
+    if command in {"/pause", "/resume", "/pause_exchange", "/resume_exchange"}:
+        return format_control_command(command, args, config)
     if command == "/slippage":
         return format_slippage_command(config.db_path, args)
     if command == "/spreads":
@@ -392,6 +438,11 @@ def format_help_message() -> str:
             "/storage - show DB size and row counts",
             "/markets - show monitored exchanges and markets",
             "/failures - show active collector failures",
+            "/control - show collector pause controls",
+            "/pause - pause all collection",
+            "/resume - resume all collection and clear exchange pauses",
+            "/pause EXCHANGE - pause one exchange, for example /pause Pacifica",
+            "/resume EXCHANGE - resume one exchange, for example /resume Pacifica",
             "/slippage SYMBOL - show slippage rows across exchanges, for example /slippage BTC",
             "/slippage EXCHANGE SYMBOL - show one market slippage, for example /slippage Hibachi BTC",
             "/orderspread - show $100k order-size spread rows for every market",
@@ -476,6 +527,54 @@ def format_failures_message(status: DBStatus) -> str:
     lines = ["Active collector failures"]
     lines.extend(f"- {failure}" for failure in status.active_failures)
     return "\n".join(lines)
+
+
+def format_control_command(command: str, args: list[str], config: TelegramMonitorConfig) -> str:
+    known_exchanges = _known_exchanges(config.market_config_path)
+    action = "pause" if command in {"/pause", "/pause_exchange"} else "resume"
+    exchange_arg = _control_exchange_arg(command, args)
+
+    if exchange_arg is None:
+        control = pause_all(config.control_path) if action == "pause" else resume_all(config.control_path)
+        headline = "Paused all collection." if action == "pause" else "Resumed all collection."
+        return f"{headline}\n{format_control(control)}"
+
+    if exchange_arg.lower() == "all":
+        control = pause_all(config.control_path) if action == "pause" else resume_all(config.control_path)
+        headline = "Paused all collection." if action == "pause" else "Resumed all collection."
+        return f"{headline}\n{format_control(control)}"
+
+    exchange_id = _canonical_exchange(exchange_arg, known_exchanges)
+    if exchange_id is None:
+        return (
+            f"Unknown exchange: {exchange_arg}\n"
+            f"Known exchanges: {', '.join(known_exchanges) if known_exchanges else 'none'}"
+        )
+
+    control = (
+        pause_exchange(config.control_path, exchange_id)
+        if action == "pause"
+        else resume_exchange(config.control_path, exchange_id)
+    )
+    headline = f"Paused {exchange_id}." if action == "pause" else f"Resumed {exchange_id}."
+    return f"{headline}\n{format_control(control)}"
+
+
+def _control_exchange_arg(command: str, args: list[str]) -> str | None:
+    if command in {"/pause_exchange", "/resume_exchange"}:
+        return args[0] if args else ""
+    return args[0] if args else None
+
+
+def _known_exchanges(path: Path) -> list[str]:
+    return sorted({market.exchange_id for market in load_market_config(path)}, key=str.lower)
+
+
+def _canonical_exchange(value: str, known_exchanges: list[str]) -> str | None:
+    for exchange_id in known_exchanges:
+        if exchange_id.lower() == value.lower():
+            return exchange_id
+    return None
 
 
 def command_arguments(text: str) -> list[str]:

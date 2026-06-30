@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from .archive import archive_month
+from .control import DEFAULT_CONTROL_PATH
 from .config import (
     DEFAULT_COLLECTOR_LOG_PATH,
     DEFAULT_MARKET_CONFIG_PATH,
@@ -44,12 +45,15 @@ from .mock_data import seed_mock_data
 from .models import CollectorMarketStatus, MarketOverviewRow, utc_now
 from .repositories import MarketDataRepository
 from .telegram_monitor import (
+    CONTROL_PATH_ENV_VAR,
     DEFAULT_CHECK_INTERVAL_SECONDS,
+    DEFAULT_COMMAND_INTERVAL_SECONDS,
     DEFAULT_PID_PATH,
     DEFAULT_RUNNER_LOG_PATH,
     DEFAULT_STATUS_INTERVAL_SECONDS,
     DEFAULT_STALE_AFTER_SECONDS,
     TELEGRAM_CHECK_INTERVAL_ENV_VAR,
+    TELEGRAM_COMMAND_INTERVAL_ENV_VAR,
     TELEGRAM_RUNNER_LOG_ENV_VAR,
     TELEGRAM_PID_PATH_ENV_VAR,
     TELEGRAM_STATUS_INTERVAL_ENV_VAR,
@@ -175,6 +179,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seconds between health checks. Defaults to 60.",
     )
     telegram_monitor.add_argument(
+        "--command-interval",
+        type=int,
+        default=_env_int(TELEGRAM_COMMAND_INTERVAL_ENV_VAR, DEFAULT_COMMAND_INTERVAL_SECONDS),
+        help="Seconds between Telegram command polls. Defaults to 2.",
+    )
+    telegram_monitor.add_argument(
         "--stale-after",
         type=int,
         default=_env_int(TELEGRAM_STALE_AFTER_ENV_VAR, DEFAULT_STALE_AFTER_SECONDS),
@@ -191,6 +201,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path(os.environ.get(TELEGRAM_RUNNER_LOG_ENV_VAR, "")) if os.environ.get(TELEGRAM_RUNNER_LOG_ENV_VAR) else DEFAULT_RUNNER_LOG_PATH,
     )
     telegram_monitor.add_argument("--collector-log", type=Path, default=collector_log_path())
+    telegram_monitor.add_argument(
+        "--control-path",
+        type=Path,
+        default=Path(os.environ.get(CONTROL_PATH_ENV_VAR, "")) if os.environ.get(CONTROL_PATH_ENV_VAR) else DEFAULT_CONTROL_PATH,
+    )
     telegram_monitor.add_argument("--once", action="store_true", help="Run one health check and exit")
     telegram_monitor.add_argument("--dry-run", action="store_true", help="Print messages instead of sending Telegram")
     return parser

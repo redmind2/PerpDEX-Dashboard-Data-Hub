@@ -49,7 +49,45 @@ def test_command_response_help_lists_interactive_commands(tmp_path) -> None:
     assert "/slippage SYMBOL" in output
     assert "/orderspread SYMBOL" in output
     assert "/spreads EXCHANGE SYMBOL" in output
+    assert "/pause EXCHANGE" in output
+    assert "/control" in output
     assert normalize_command("/status@PerpDEXDashboardbot") == "/status"
+
+
+def test_command_response_updates_collector_control(tmp_path) -> None:
+    config = TelegramMonitorConfig(
+        db_path=tmp_path / "monitor.sqlite",
+        bot_token="token",
+        chat_id="chat",
+        control_path=tmp_path / "control.json",
+    )
+    market_config = tmp_path / "markets.json"
+    market_config.write_text(
+        '{"markets":[{"exchange":"Pacifica","symbols":["BTC-PERP"]},{"exchange":"Hibachi","symbols":["BTC-PERP"]}]}',
+        encoding="utf-8",
+    )
+    config = TelegramMonitorConfig(
+        db_path=config.db_path,
+        bot_token=config.bot_token,
+        chat_id=config.chat_id,
+        market_config_path=market_config,
+        control_path=config.control_path,
+    )
+    status = read_db_status(config.db_path)
+
+    pause_exchange_output = command_response("/pause", ["pacifica"], config, status, "running")
+    control_output = command_response("/control", [], config, status, "running")
+    resume_exchange_output = command_response("/resume_exchange", ["Pacifica"], config, status, "running")
+    pause_all_output = command_response("/pause", [], config, status, "running")
+    resume_all_output = command_response("/resume", [], config, status, "running")
+
+    assert "Paused Pacifica." in pause_exchange_output
+    assert "paused exchanges: Pacifica" in control_output
+    assert "Resumed Pacifica." in resume_exchange_output
+    assert "Paused all collection." in pause_all_output
+    assert "collector: paused" in pause_all_output
+    assert "Resumed all collection." in resume_all_output
+    assert "collector: running" in resume_all_output
 
 
 def test_read_db_status_and_stale_issue(tmp_path) -> None:
