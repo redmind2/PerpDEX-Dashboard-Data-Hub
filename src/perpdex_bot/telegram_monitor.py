@@ -38,6 +38,7 @@ TELEGRAM_CHAT_ID_ENV_VAR = "PERPDEX_TELEGRAM_CHAT_ID"
 TELEGRAM_STATUS_INTERVAL_ENV_VAR = "PERPDEX_TELEGRAM_STATUS_INTERVAL"
 TELEGRAM_CHECK_INTERVAL_ENV_VAR = "PERPDEX_TELEGRAM_CHECK_INTERVAL"
 TELEGRAM_COMMAND_INTERVAL_ENV_VAR = "PERPDEX_TELEGRAM_COMMAND_INTERVAL"
+TELEGRAM_ALERT_COOLDOWN_ENV_VAR = "PERPDEX_TELEGRAM_ALERT_COOLDOWN"
 TELEGRAM_STALE_AFTER_ENV_VAR = "PERPDEX_TELEGRAM_STALE_AFTER"
 TELEGRAM_RUNNER_LOG_ENV_VAR = "PERPDEX_LIVE_RUNNER_LOG_PATH"
 TELEGRAM_PID_PATH_ENV_VAR = "PERPDEX_LIVE_PID_PATH"
@@ -46,6 +47,7 @@ CONTROL_PATH_ENV_VAR = "PERPDEX_CONTROL_PATH"
 DEFAULT_STATUS_INTERVAL_SECONDS = 6 * 60 * 60
 DEFAULT_CHECK_INTERVAL_SECONDS = 60
 DEFAULT_COMMAND_INTERVAL_SECONDS = 2
+DEFAULT_ALERT_COOLDOWN_SECONDS = 15 * 60
 DEFAULT_STALE_AFTER_SECONDS = 15 * 60
 DEFAULT_RUNNER_LOG_PATH = Path("data/logs/live-test-runner.log")
 DEFAULT_PID_PATH = Path("data/live-test.pid")
@@ -70,6 +72,7 @@ class TelegramMonitorConfig:
     status_interval_seconds: int = DEFAULT_STATUS_INTERVAL_SECONDS
     check_interval_seconds: int = DEFAULT_CHECK_INTERVAL_SECONDS
     command_interval_seconds: int = DEFAULT_COMMAND_INTERVAL_SECONDS
+    alert_cooldown_seconds: int = DEFAULT_ALERT_COOLDOWN_SECONDS
     stale_after_seconds: int = DEFAULT_STALE_AFTER_SECONDS
     pid_path: Path = DEFAULT_PID_PATH
     runner_log_path: Path = DEFAULT_RUNNER_LOG_PATH
@@ -89,6 +92,7 @@ class DBStatus:
     latest_snapshot_symbol: str | None
     latest_snapshot_at: datetime | None
     active_failures: tuple[str, ...]
+    db_error: str | None = None
 
 
 class LogCursor:
@@ -125,6 +129,7 @@ def config_from_args(args: argparse.Namespace) -> TelegramMonitorConfig:
         status_interval_seconds=args.status_interval,
         check_interval_seconds=args.check_interval,
         command_interval_seconds=args.command_interval,
+        alert_cooldown_seconds=args.alert_cooldown,
         stale_after_seconds=args.stale_after,
         pid_path=args.pid_path,
         runner_log_path=args.runner_log,
@@ -154,6 +159,9 @@ class TelegramMonitor:
         self.runner_log = LogCursor(config.runner_log_path)
         self.collector_log = LogCursor(config.collector_log_path)
         self.last_issue_signature = ""
+        self.last_issue_sent_at = 0.0
+        self.suppressed_issue_updates = 0
+        self.routine_log_issue_count = 0
         self.telegram_update_offset: int | None = None
 
     def run_forever(self) -> None:
@@ -171,14 +179,14 @@ class TelegramMonitor:
             time.sleep(self.config.command_interval_seconds)
 
     def check_once(self, send_status: bool = False, handle_commands: bool = True) -> None:
-        issues: list[str] = []
+        critical_issues: list[str] = []
         db_status = read_db_status(self.config.db_path)
         process_state = collector_process_state(self.config.pid_path)
         if handle_commands:
             self.handle_commands(db_status, process_state)
         control_state = read_control(self.config.control_path)
 
-        issues.extend(
+        critical_issues.extend(
             db_issues(
                 db_status,
                 self.config.stale_after_seconds,
@@ -186,24 +194,48 @@ class TelegramMonitor:
             )
         )
         if process_state != "running":
-            issues.append(f"collector process is {process_state}")
-        issues.extend(log_issues(self.runner_log.read_new_lines(), "runner log"))
-        issues.extend(log_issues(self.collector_log.read_new_lines(), "collector log"))
+            critical_issues.append(f"collector process is {process_state}")
+        routine_log_issues = log_issues(self.runner_log.read_new_lines(), "runner log")
+        routine_log_issues.extend(log_issues(self.collector_log.read_new_lines(), "collector log"))
+        self.routine_log_issue_count += len(routine_log_issues)
 
-        if issues:
-            signature = "\n".join(issues)
+        if critical_issues:
+            signature = "\n".join(critical_issues)
             if signature != self.last_issue_signature:
-                self._send(format_issue_message(issues, db_status, process_state))
+                now = time.monotonic()
+                elapsed = now - self.last_issue_sent_at
+                if self.last_issue_sent_at and elapsed < self.config.alert_cooldown_seconds:
+                    self.suppressed_issue_updates += 1
+                    return
+                self._send(
+                    format_issue_message(
+                        critical_issues,
+                        db_status,
+                        process_state,
+                        suppressed_updates=self.suppressed_issue_updates,
+                    )
+                )
                 self.last_issue_signature = signature
+                self.last_issue_sent_at = now
+                self.suppressed_issue_updates = 0
             return
 
         if self.last_issue_signature:
             self._send(format_recovery_message(db_status, process_state))
             self.last_issue_signature = ""
+            self.last_issue_sent_at = 0.0
+            self.suppressed_issue_updates = 0
             return
 
         if send_status:
-            self._send(format_status_message(db_status, process_state))
+            self._send(
+                format_status_message(
+                    db_status,
+                    process_state,
+                    routine_log_issue_count=self.routine_log_issue_count,
+                )
+            )
+            self.routine_log_issue_count = 0
 
     def handle_commands(
         self,
@@ -247,7 +279,7 @@ class TelegramMonitor:
 
 def read_db_status(path: Path) -> DBStatus:
     if not path.exists():
-        return DBStatus(path, 0, 0, 0, 0, None, None, None, ("DB file does not exist",))
+        return DBStatus(path, 0, 0, 0, 0, None, None, None, (), "DB file does not exist")
 
     try:
         uri = f"{path.resolve().as_uri()}?mode=ro"
@@ -273,7 +305,7 @@ def read_db_status(path: Path) -> DBStatus:
                 """
             ).fetchall()
     except sqlite3.Error as exc:
-        return DBStatus(path, path.stat().st_size, 0, 0, 0, None, None, None, (f"DB read failed: {exc}",))
+        return DBStatus(path, path.stat().st_size, 0, 0, 0, None, None, None, (), f"DB read failed: {exc}")
 
     return DBStatus(
         db_path=path,
@@ -304,7 +336,10 @@ def db_issues(
     stale_after_seconds: int,
     check_staleness: bool = True,
 ) -> list[str]:
-    issues = list(status.active_failures)
+    issues: list[str] = []
+    if status.db_error:
+        issues.append(status.db_error)
+        return issues
     if not check_staleness:
         return issues
     if not status.db_path.exists():
@@ -454,12 +489,25 @@ def format_help_message() -> str:
             "/spreads SYMBOL - show spread rows for one market across exchanges, for example /spreads BTC",
             "/spreads EXCHANGE SYMBOL - show one market, for example /spreads Hibachi BTC-PERP",
             "",
-            "Automatic monitor: OK report every 6 hours, instant alert on collector/DB/log issues.",
+            "Automatic monitor: OK report every 6 hours, instant alert only on critical collector/DB issues.",
         )
     )
 
 
-def format_status_message(status: DBStatus, process_state: str) -> str:
+def format_status_message(
+    status: DBStatus,
+    process_state: str,
+    routine_log_issue_count: int = 0,
+) -> str:
+    routine_summary = (
+        "routine summary: no routine issues since last report"
+        if routine_log_issue_count == 0 and not status.active_failures
+        else (
+            "routine summary: "
+            f"{len(status.active_failures)} active market failures now, "
+            f"{routine_log_issue_count} routine log issue lines since last report"
+        )
+    )
     return "\n".join(
         (
             "[OK] PerpDEX running",
@@ -470,11 +518,17 @@ def format_status_message(status: DBStatus, process_state: str) -> str:
             f"orderbook levels: {status.orderbook_level_count:,}",
             f"funding rates: {status.funding_count:,}",
             f"latest snapshot: {format_latest_snapshot(status)}",
+            routine_summary,
         )
     )
 
 
-def format_issue_message(issues: list[str], status: DBStatus, process_state: str) -> str:
+def format_issue_message(
+    issues: list[str],
+    status: DBStatus,
+    process_state: str,
+    suppressed_updates: int = 0,
+) -> str:
     lines = [
         "[ALERT] PerpDEX issue detected",
         f"collector: {process_state}",
@@ -483,6 +537,8 @@ def format_issue_message(issues: list[str], status: DBStatus, process_state: str
         "issues:",
     ]
     lines.extend(f"- {issue}" for issue in issues)
+    if suppressed_updates:
+        lines.append(f"suppressed similar updates during cooldown: {suppressed_updates}")
     return "\n".join(lines)
 
 
@@ -746,6 +802,8 @@ def _latest_snapshot_rows(
             FROM market_snapshots
             WHERE (? IS NULL OR lower(exchange_id) = lower(?))
               AND (? IS NULL OR upper(symbol) = upper(?))
+              AND best_ask >= best_bid
+              AND spread >= 0
             GROUP BY exchange_id, symbol
         ) grouped ON grouped.latest_id = latest.id
         ORDER BY latest.exchange_id ASC, latest.symbol ASC
@@ -770,6 +828,8 @@ def _average_order_spread_bps(
         WHERE exchange_id = ?
           AND symbol = ?
           AND timestamp >= ?
+          AND best_ask >= best_bid
+          AND spread >= 0
         ORDER BY timestamp DESC, id DESC
         """,
         (exchange_id, symbol, since),
@@ -916,6 +976,8 @@ def read_spread_rows(
                 FROM market_snapshots
                 WHERE (? IS NULL OR lower(exchange_id) = lower(?))
                   AND (? IS NULL OR upper(symbol) = upper(?))
+                  AND best_ask >= best_bid
+                  AND spread >= 0
                 GROUP BY exchange_id, symbol
             ) grouped ON grouped.latest_id = latest.id
             ORDER BY latest.exchange_id ASC, latest.symbol ASC
@@ -936,6 +998,8 @@ def read_spread_rows(
                     WHERE exchange_id = ?
                       AND symbol = ?
                       AND timestamp >= ?
+                      AND best_ask >= best_bid
+                      AND spread >= 0
                     """,
                     (latest["exchange_id"], latest["symbol"], since),
                 ).fetchone()
@@ -1007,6 +1071,8 @@ def read_spread_summary(
             FROM market_snapshots
             WHERE (? IS NULL OR lower(exchange_id) = lower(?))
               AND (? IS NULL OR upper(symbol) = upper(?))
+              AND best_ask >= best_bid
+              AND spread >= 0
             ORDER BY timestamp DESC, id DESC
             LIMIT 1
             """,
@@ -1027,6 +1093,8 @@ def read_spread_summary(
                 WHERE (? IS NULL OR lower(exchange_id) = lower(?))
                   AND (? IS NULL OR upper(symbol) = upper(?))
                   AND timestamp >= ?
+                  AND best_ask >= best_bid
+                  AND spread >= 0
                 """,
                 (
                     exchange_id,
@@ -1056,6 +1124,8 @@ def read_spread_summary(
                 FROM market_snapshots
                 WHERE (? IS NULL OR lower(exchange_id) = lower(?))
                   AND (? IS NULL OR upper(symbol) = upper(?))
+                  AND best_ask >= best_bid
+                  AND spread >= 0
                 GROUP BY exchange_id, symbol
             )
             """,

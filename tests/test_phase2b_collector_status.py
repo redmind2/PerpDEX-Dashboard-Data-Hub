@@ -16,7 +16,7 @@ from perpdex_bot.config import (
 )
 from perpdex_bot.dashboard import render_average_spreads, render_collector_status, render_snapshot
 from perpdex_bot.db import AsyncSQLite
-from perpdex_bot.models import AverageSpread, BookSide, MarketSnapshot, OrderBookLevel
+from perpdex_bot.models import AverageSpread, BookSide, MarketSnapshot, OrderBookLevel, to_iso
 from perpdex_bot.repositories import MarketDataRepository
 
 
@@ -252,5 +252,88 @@ def test_average_spread_requires_two_samples_for_window(tmp_path) -> None:
         assert one_min.avg_spread_bps is None
         assert five_min.samples == 2
         assert five_min.avg_spread == 2.0
+
+    asyncio.run(scenario())
+
+
+def test_average_spread_ignores_crossed_snapshots(tmp_path) -> None:
+    async def scenario() -> None:
+        async with AsyncSQLite(tmp_path / "spreads.sqlite") as db:
+            await db.initialize()
+            repo = MarketDataRepository(db)
+            now = datetime(2026, 6, 23, 12, 0, tzinfo=timezone.utc)
+            valid_rows = (
+                (now - timedelta(minutes=4), 99.0, 101.0),
+                (now, 99.5, 100.5),
+            )
+            for timestamp, bid, ask in valid_rows:
+                await repo.save_snapshot(
+                    MarketSnapshot(
+                        exchange_id="Hibachi",
+                        symbol="BTC-PERP",
+                        timestamp=timestamp,
+                        mark_price=100.0,
+                        index_price=100.0,
+                        best_bid=bid,
+                        best_ask=ask,
+                        bids=(OrderBookLevel(BookSide.BID, price=bid, size=1.0, level_index=0),),
+                        asks=(OrderBookLevel(BookSide.ASK, price=ask, size=1.0, level_index=0),),
+                    )
+                )
+            await db.execute(
+                """
+                INSERT INTO market_snapshots (
+                    exchange_id, symbol, timestamp, mark_price, index_price,
+                    best_bid, best_ask, spread, spread_bps
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "Hibachi",
+                    "BTC-PERP",
+                    to_iso(now - timedelta(minutes=2)),
+                    100.0,
+                    100.0,
+                    105.0,
+                    95.0,
+                    -10.0,
+                    -1000.0,
+                ),
+            )
+
+            averages = await repo.average_spreads("Hibachi", "BTC-PERP", now=now)
+
+        five_min = next(item for item in averages if item.window == "5m")
+        assert five_min.samples == 2
+        assert five_min.avg_spread == 1.5
+        assert five_min.avg_spread_bps is not None
+        assert five_min.avg_spread_bps > 0
+
+    asyncio.run(scenario())
+
+
+def test_save_snapshot_rejects_crossed_orderbook(tmp_path) -> None:
+    async def scenario() -> None:
+        async with AsyncSQLite(tmp_path / "spreads.sqlite") as db:
+            await db.initialize()
+            repo = MarketDataRepository(db)
+            try:
+                await repo.save_snapshot(
+                    MarketSnapshot(
+                        exchange_id="Hibachi",
+                        symbol="BTC-PERP",
+                        timestamp=datetime(2026, 6, 23, 12, 0, tzinfo=timezone.utc),
+                        mark_price=100.0,
+                        index_price=100.0,
+                        best_bid=101.0,
+                        best_ask=99.0,
+                        bids=(OrderBookLevel(BookSide.BID, price=101.0, size=1.0, level_index=0),),
+                        asks=(OrderBookLevel(BookSide.ASK, price=99.0, size=1.0, level_index=0),),
+                    )
+                )
+            except ValueError as exc:
+                assert "Crossed orderbook" in str(exc)
+            else:
+                raise AssertionError("Expected crossed orderbook to be rejected")
 
     asyncio.run(scenario())

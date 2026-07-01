@@ -47,12 +47,14 @@ from .repositories import MarketDataRepository
 from .telegram_monitor import (
     CONTROL_PATH_ENV_VAR,
     DEFAULT_CHECK_INTERVAL_SECONDS,
+    DEFAULT_ALERT_COOLDOWN_SECONDS,
     DEFAULT_COMMAND_INTERVAL_SECONDS,
     DEFAULT_PID_PATH,
     DEFAULT_RUNNER_LOG_PATH,
     DEFAULT_STATUS_INTERVAL_SECONDS,
     DEFAULT_STALE_AFTER_SECONDS,
     TELEGRAM_CHECK_INTERVAL_ENV_VAR,
+    TELEGRAM_ALERT_COOLDOWN_ENV_VAR,
     TELEGRAM_COMMAND_INTERVAL_ENV_VAR,
     TELEGRAM_RUNNER_LOG_ENV_VAR,
     TELEGRAM_PID_PATH_ENV_VAR,
@@ -183,6 +185,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=_env_int(TELEGRAM_COMMAND_INTERVAL_ENV_VAR, DEFAULT_COMMAND_INTERVAL_SECONDS),
         help="Seconds between Telegram command polls. Defaults to 2.",
+    )
+    telegram_monitor.add_argument(
+        "--alert-cooldown",
+        type=int,
+        default=_env_int(TELEGRAM_ALERT_COOLDOWN_ENV_VAR, DEFAULT_ALERT_COOLDOWN_SECONDS),
+        help="Minimum seconds between changed issue alerts. Defaults to 900.",
     )
     telegram_monitor.add_argument(
         "--stale-after",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from datetime import datetime, timedelta, timezone
 
 from .config import DEFAULT_AVERAGE_WINDOWS, MARKET_RETENTION_DAYS
@@ -22,6 +23,7 @@ class MarketDataRepository:
         self.db = db
 
     async def save_snapshot(self, snapshot: MarketSnapshot) -> int:
+        _validate_snapshot(snapshot)
         cursor = await self.db.execute(
             """
             INSERT INTO market_snapshots (
@@ -142,10 +144,10 @@ class MarketDataRepository:
         for label, seconds in DEFAULT_AVERAGE_WINDOWS.items():
             since = current_time - timedelta(seconds=seconds)
             if base_where:
-                where = f"{base_where} AND timestamp >= ?"
+                where = f"{base_where} AND timestamp >= ? AND best_ask >= best_bid AND spread >= 0"
                 params = (*base_params, to_iso(since))
             else:
-                where = "WHERE timestamp >= ?"
+                where = "WHERE timestamp >= ? AND best_ask >= best_bid AND spread >= 0"
                 params = (to_iso(since),)
             row = await self.db.fetch_one(
                 f"""
@@ -471,3 +473,23 @@ class MarketDataRepository:
         if not clauses:
             return "", tuple(params)
         return "WHERE " + " AND ".join(clauses), tuple(params)
+
+
+def _validate_snapshot(snapshot: MarketSnapshot) -> None:
+    numeric_values = (
+        snapshot.mark_price,
+        snapshot.index_price,
+        snapshot.best_bid,
+        snapshot.best_ask,
+        snapshot.spread,
+        snapshot.spread_bps,
+    )
+    if any(not math.isfinite(value) for value in numeric_values):
+        raise ValueError(f"Invalid non-finite market snapshot for {snapshot.exchange_id} {snapshot.symbol}")
+    if snapshot.best_bid <= 0 or snapshot.best_ask <= 0:
+        raise ValueError(f"Invalid non-positive book price for {snapshot.exchange_id} {snapshot.symbol}")
+    if snapshot.best_ask < snapshot.best_bid:
+        raise ValueError(
+            f"Crossed orderbook for {snapshot.exchange_id} {snapshot.symbol}: "
+            f"best_bid={snapshot.best_bid} best_ask={snapshot.best_ask}"
+        )

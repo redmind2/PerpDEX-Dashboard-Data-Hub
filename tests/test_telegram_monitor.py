@@ -9,6 +9,7 @@ from perpdex_bot.telegram_monitor import (
     command_response,
     db_issues,
     format_bytes,
+    format_status_message,
     format_order_spread_command,
     format_spreads_command,
     format_slippage_command,
@@ -122,6 +123,59 @@ def test_read_db_status_and_stale_issue(tmp_path) -> None:
     assert status.snapshot_count == 1
     assert status.latest_snapshot_exchange == "Hibachi"
     assert any("latest snapshot is stale" in issue for issue in db_issues(status, 60))
+
+
+def test_active_market_failures_are_routine_status_summary(tmp_path) -> None:
+    db_path = tmp_path / "monitor.sqlite"
+    timestamp = datetime.now(timezone.utc)
+    with sqlite3.connect(db_path) as conn:
+        conn.executescript(SCHEMA)
+        conn.execute(
+            """
+            INSERT INTO market_snapshots (
+                exchange_id, symbol, timestamp, mark_price, index_price,
+                best_bid, best_ask, spread, spread_bps
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "Hibachi",
+                "BTC-PERP",
+                timestamp.isoformat(),
+                100.0,
+                100.0,
+                99.0,
+                101.0,
+                2.0,
+                200.0,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO collector_market_status (
+                exchange_id, symbol, last_failure_at, consecutive_failures,
+                last_error, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "Hyperliquid",
+                "WTIOIL-PERP",
+                timestamp.isoformat(),
+                3,
+                "temporary API error",
+                timestamp.isoformat(),
+            ),
+        )
+        conn.commit()
+
+    status = read_db_status(db_path)
+    output = format_status_message(status, "running", routine_log_issue_count=7)
+
+    assert db_issues(status, 60) == []
+    assert len(status.active_failures) == 1
+    assert "1 active market failures now" in output
+    assert "7 routine log issue lines since last report" in output
 
 
 def test_format_slippage_command_reads_latest_orderbook(tmp_path) -> None:

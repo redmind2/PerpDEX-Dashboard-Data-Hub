@@ -159,7 +159,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\live-test-loop.ps1
 
 ## Telegram Health Monitor
 
-The Telegram monitor is local alerting only. Keep the real bot token and chat id in `.env`; do not commit them. It sends an OK status every 6 hours and alerts within the next check interval when the collector process stops, the DB becomes stale, collector failures appear, or new error lines appear in the live logs.
+The Telegram monitor is local alerting only. Keep the real bot token and chat id in `.env`; do not commit them. It sends an OK status every 6 hours and alerts within the next check interval only for critical issues such as the collector process stopping, the DB becoming unreadable, or the latest DB snapshot becoming stale. Routine per-market collection failures and matching error lines in live logs are summarized as counts in the 6-hour status report instead of being sent as immediate alerts.
 
 Add these local `.env` values:
 
@@ -169,6 +169,7 @@ PERPDEX_TELEGRAM_CHAT_ID=
 PERPDEX_TELEGRAM_STATUS_INTERVAL=21600
 PERPDEX_TELEGRAM_CHECK_INTERVAL=60
 PERPDEX_TELEGRAM_COMMAND_INTERVAL=2
+PERPDEX_TELEGRAM_ALERT_COOLDOWN=900
 PERPDEX_TELEGRAM_STALE_AFTER=900
 PERPDEX_LIVE_PID_PATH=data/live-test.pid
 PERPDEX_LIVE_RUNNER_LOG_PATH=data/logs/live-test-runner.log
